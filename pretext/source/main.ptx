@@ -23,10 +23,10 @@
     <!-- out for now and write this when the book is more complete -->
     <xi:include href="./meta_frontmatter.ptx" />
 
-    <!-- Example chapters from template - commented out for now -->
-    <!-- <xi:include href="./ch_first.ptx" /> -->
-    <!-- <xi:include href="./ch_empty.ptx"/> -->
-    <!-- Of course you will want to add more chapters as you proceed-->
+    <!-- Introduction chapter -->
+    <xi:include href="./ch_intro.ptx" />
+
+    <!-- Additional chapters will be added here as the book develops -->
 
     <!-- This chapter contains a wide variety of elements to  -->
     <!-- illustrate what pretext can do, plus links to more help.  -->
