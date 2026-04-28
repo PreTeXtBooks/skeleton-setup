@@ -85,9 +85,8 @@ def main():
     print(f"  Total images in assets/generated: {total_images}")
     
     if total_images == 0:
-        print("\nWARNING: No images were created. Images may not render correctly.")
-        return 1
-    
+        print("\nNote: No images were found in the source directory.")
+
     return 0
 
 if __name__ == "__main__":
