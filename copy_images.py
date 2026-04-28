@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Copy and convert images from bookdown to PreTeXt generated-assets directory.
+Copy and convert images to PreTeXt generated-assets directory.
 This script prepares images for the PreTeXt build process.
 """
 
@@ -12,17 +12,14 @@ from pathlib import Path
 def main():
     # Define paths
     script_dir = Path(__file__).parent
-    
-    # correct this with the directory where images are stored - e.g., bookdown_img = script_dir / "bookdown" / "img"
-    bookdown_img = script_dir / "images"
-    
+    source_images_dir = script_dir / "images"
     # Put generated images in pretext/assets/generated/ directory
     # This matches the publication.ptx configuration where "external" is ../assets
     # and source files reference images as source="generated/*.png"
     pretext_assets = script_dir / "pretext" / "assets" / "generated"
     
     print("Preparing images for PreTeXt book...")
-    print(f"Source: {bookdown_img}")
+    print(f"Source: {source_images_dir}")
     print(f"Target: {pretext_assets}")
     
     # Create assets/generated directory
@@ -40,7 +37,7 @@ def main():
     images_converted = 0
     
     # Copy existing PNG files first
-    for png_file in bookdown_img.rglob("*.png"):
+    for png_file in source_images_dir.rglob("*.png"):
         # Skip defunct images
         if "defunct_images" in str(png_file):
             continue
@@ -52,7 +49,7 @@ def main():
     
     # Convert EPS files to PNG if ImageMagick is available
     if convert_available:
-        for eps_file in bookdown_img.rglob("*.eps"):
+        for eps_file in source_images_dir.rglob("*.eps"):
             # Get the base filename without extension
             base_name = eps_file.stem
             target_file = pretext_assets / f"{base_name}.png"
