@@ -12,7 +12,10 @@ from pathlib import Path
 def main():
     # Define paths
     script_dir = Path(__file__).parent
-    bookdown_img = script_dir / "bookdown" / "img"
+    
+    # correct this with the directory where images are stored - e.g., bookdown_img = script_dir / "bookdown" / "img"
+    bookdown_img = script_dir / "images"
+    
     # Put generated images in pretext/assets/generated/ directory
     # This matches the publication.ptx configuration where "external" is ../assets
     # and source files reference images as source="generated/*.png"
