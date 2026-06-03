@@ -5,6 +5,12 @@
   <p>
     This book is a PreTeXt version. This is the skeleton to be filled in.
   </p>
+
+    <!-- Example: STACK Questions -->
+    <exercise xml:id="ex-sample-stack-question">
+        <!--<title></title>-->
+        <stack label="stk-estimate-mean-median" source="stack/estimate-mean-median.xml"/>
+    </exercise>  
   
 </chapter>
   
