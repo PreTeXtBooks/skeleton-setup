@@ -6,6 +6,12 @@
     This book is a PreTeXt version. This is the skeleton to be filled in.
   </p>
 
+  <!-- Example Image -->
+    <figure xml:id="fig-placeholder">
+      <caption>Sample Caption</caption>
+      <image source="../images/placeholder.jpeg" width="50%"/>
+      <description>Sample description (in case image does not render)</description>
+    </figure>
 
   <!-- Example STACK Question -->
 
