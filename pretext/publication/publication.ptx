@@ -43,7 +43,10 @@
   <latex print="no" sides="one">
     <asymptote links="no"/>
   </latex>
-  
+
+    <!-- This public server is for testing and demonstration of STACK q's only. -->
+    <stack server="https://stack-api.maths.ed.ac.uk" />
+
   <html>
     <!-- Native search with Javascript. -->
     <search variant="default"/>
