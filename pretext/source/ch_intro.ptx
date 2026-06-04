@@ -15,7 +15,7 @@
   <!-- Example Image -->
   <figure xml:id="fig-placeholder">
     <caption>Sample Caption</caption>
-    <image source="../images/placeholder.jpeg" width="50%"/>
+    <image source="images/placeholder.jpeg" width="50%"/>
     <description>Sample description (in case image does not render)</description>
   </figure>
 
