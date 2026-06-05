@@ -1,0 +1,1731 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<chapter xml:id="ch-08" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <title>Crime Along Spatial Networks</title>
+
+  <introduction>
+    <p>
+      In the previous chapter we explored how the techniques for spatial pattern analysis can be
+      used to study the varying intensity of crime across space. We introduce the key idea of
+      spatial randomness. These methods were developed to study locations in a continuous plane and
+      are also referred to as <alert>planar spatial analysis</alert>. Point crime data, however,
+      has an inherent structure to it. There are parts of our study region where crime points
+      cannot appear. Since typically the data will be geocoded at the street level address, crime
+      data almost always will appear alongside the spatial network of roads and streets. Crimes
+      won't appear randomly anywhere in our two dimensional representation of the city; they will
+      only appear along the street network covering this city. We can see this in the following
+      example from Chicago using data from <c>spatstat</c>:
+    </p>
+
+    <figure>
+      <caption>Crime along street network in Chicago</caption>
+      <image source="figure-ch08/ch8-1.png">
+        <description>A simplified street map titled 'Chicago', thin black lines trace the road
+        network in a small section of a city. To the left, a legend matches various shapes, such
+        as circles and diamonds to types of crime, 'assault', 'burglary', 'cartheft', 'damage',
+        'robbery', 'theft', and 'trespass'. The symbols appear on the street map, entirely on the
+        road network, often in clusters.</description>
+      </image>
+    </figure>
+
+    <p>
+      Clearly the offences are constrained to only occur along the street network. This is not a
+      homogeneous Poisson process along the whole study surface, because there is an underlying
+      structure. If we want to investigate heterogeneity on intensity, for example, we would need
+      to account for that underlying structure, the fact that the points can only be located along
+      the network and not in other parts of the study region. Several authors have argued that
+      crime is best represented and predicted if we focus in the street network rather than other
+      kind of level of aggregation and that this has clear implications for operational policing
+      (<xref ref="Singleton_2014" text="custom">Singleton and Brunsdon, 2014</xref>;
+      <xref ref="Rosser_2017" text="custom">Rosser et al., 2017</xref>). It is clear that if
+      our crime occurrences are collected and represented along a spatial network, we need to
+      ensure we use techniques of analysis and visualisation that respect this existing underlying
+      structure in our data.
+    </p>
+
+    <p>
+      The software infrastructure for spatial analysis along networks, however, is still not as
+      developed and consolidated. Partly, this is to do with the statistical and computational
+      challenges when we move from planar to linear network analysis. There is some software such
+      as <url href="http://sanet.csis.u-tokyo.ac.jp/">SANET</url> that was originally conceived
+      as a toolbox for ArcGIS but with a beta standalone version already available
+      (<xref ref="Okabe_2012" text="custom">Okabe and Sugihara, 2012</xref>). R users and
+      developers are working to expand the functionality of R in this regard. It was only in 2020
+      that Lucas van der Meer, a Dutch spatial data scientist, published the first release of the
+      <c>sfnetworks</c> package to facilitate the creation and analysis of spatial networks. Two
+      other useful packages (<c>SpNetPrep</c> and <c>DRHotNet</c>) developed by Briz-Redón and
+      colleagues are also only a couple of years old
+      (<xref ref="BrizRedon_2019a" text="custom">Briz-Redón et al., 2019a</xref>;
+      <xref ref="BrizRedon_2019b" text="custom">Briz-Redón et al., 2019b</xref>). Another
+      recent package, released in 2021, is <c>spNetwork</c> by Jeremy Gelb and Philippe Apparicio
+      that can be used for kernel density estimation along networks
+      (<xref ref="Gelb_2021" text="custom">Gelb, 2021</xref>). Finally, the package
+      <c>spatstat</c>, covered in the last chapter, also provides functionality for the analysis
+      of events along spatial networks.
+    </p>
+
+    <p>
+      In this chapter we will provide an introduction to the study of crime along networks by
+      exploring the following:
+    </p>
+
+    <ul>
+      <li><p>creation of network representations from geographical vector objects</p></li>
+      <li><p>linking data to meaningful micro-places such as <alert>street segment</alert> (or in
+        a transportation example, train line segment) or <alert>street junction</alert> (or for
+        transport research a train or bus station)</p></li>
+      <li><p>introducing the idea of <alert>hot routes</alert></p></li>
+      <li><p>evaluating crime concentration in these types of micro-places using
+        <alert>Gini coefficient</alert> and <alert>Lorenz curve</alert></p></li>
+      <li><p><alert>street profile analysis</alert> – an alternative (non-spatial) way to
+        visualise crime along a network</p></li>
+      <li><p>introducing <c>spatstat</c> for the analysis of events along networks</p></li>
+    </ul>
+
+    <program language="r">
+      <input>
+# Packages for reading data and data carpentry
+library(readr)
+library(readxl)
+library(janitor)
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(lubridate)
+
+# Packages for handling spatial data
+library(sf)
+library(lwgeom)
+library(sfnetworks)
+library(spatstat)
+library(spatstat.linnet)
+library(maptools)
+# NOTE: maptools is still required for the as.linnet.SpatialLines() function,
+# but will be retired by the end of 2023. Look out for where
+# as.linnet.SpatialLines() function will migrate!
+
+# Package for computing Lorenz curve
+library(ineq)
+
+# Packages for visualisation and mapping
+library(ggplot2)
+library(ggpubr)
+library(raster)
+library(leaflet)
+
+# Packages providing access to data
+library(osmdata)
+library(tigris)
+      </input>
+    </program>
+
+    <p>
+      It is not only in the case of street networks that understanding spatial point patterns
+      along a network might be more meaningful; there are other networks we might want to consider.
+      Transport networks are a good example of this and are receiving an increasing interest in
+      criminology and crime analysis
+      (<xref ref="Newton_2008" text="custom">Newton, 2008</xref>;
+      <xref ref="Tompson_2009" text="custom">Tompson et al., 2009</xref>;
+      <xref ref="Ceccato_2013" text="custom">Ceccato, 2013</xref>).
+    </p>
+
+  </introduction>
+
+  <section xml:id="sec-ch8-constructing">
+    <title>Constructing and storing a spatial linear network</title>
+
+    <p>
+      The first difficulty one encounters when wanting to do analysis along spatial networks is to
+      get the data for such geographical element in the proper shape. It is fairly straightforward
+      to get files with the administrative boundaries for census geographies, as we have seen in
+      previous chapters. This kind of geographical data is widely available in official and open
+      repositories (see also <em>Appendix C: sourcing geographical data for crime analysis</em>).
+      Getting data for spatial networks used to be a little bit trickier, although it is getting
+      better. One could, for example, use the <c>osmdata</c> package to access Open Street Map
+      data for a road network (we also discuss this in greater detail in <em>Appendix C</em>). Or,
+      if you analyse data from the United States, you could use the <c>tigris</c> package to
+      extract geometries which represent road networks.
+    </p>
+
+    <p>
+      Below we show how to obtain this data for Kensington, a popular neighbourhood in Toronto
+      city centre through <c>osmdata</c> and for Manhattan using <c>tigris</c>. As we're querying
+      data from Open Street Map, first we draw a bounding box around the area we are interested
+      in, then select "highways" as the feature to extract (see <em>Appendix C</em> for details on
+      building OSM queries). As discussed by
+      <xref ref="Abad_2019" text="custom">Abad et al. (2019)</xref>, the <c>osmdata</c>
+      package turns streets that form loops into polygons; to ensure we end up with lines we use
+      <c>osm_poly2line</c>.
+    </p>
+
+    <program language="r">
+      <input>
+# using osm data
+highways_heswall &lt;- opq("Heswall, UK") %&gt;%
+  add_osm_feature(key = "highway") %&gt;%
+  osmdata_sf()
+
+heswall_lines &lt;- highways_heswall$osm_lines
+      </input>
+    </program>
+
+    <p>
+      Now let's use the <c>tigris</c> package to get TIGER/Line shapefiles from the United States
+      Census Bureau. The <c>roads()</c> function returns the content of all road shapefiles —
+      which includes primary roads, secondary roads, local neighbourhood roads, rural roads, city
+      streets, vehicular trails (4WD), ramps, service drives, walkways, stairways, alleys, and
+      private roads. It returns these as an <c>sf</c> object.
+    </p>
+
+    <program language="r">
+      <input>
+# using tigris
+manhattan_roads &lt;- roads("NY", "New York")
+      </input>
+    </program>
+
+    <p>
+      We can now plot these two side-by-side.
+    </p>
+
+    <program language="r">
+      <input>
+# plot results
+plot_1 &lt;- ggplot(heswall_lines) + geom_sf() + theme_void()
+plot_2 &lt;- ggplot(manhattan_roads) + geom_sf() + theme_void()
+figure_1 &lt;- ggarrange(plot_1, plot_2, labels = c("Heswall", "Manhattan"),
+                    ncol = 2, nrow = 1)
+figure_1
+      </input>
+    </program>
+
+    <figure>
+      <caption>Street network geometries for Heswall, UK and Manhattan, USA</caption>
+      <image source="figure-ch08/ch8-2.png">
+        <description>Two simple street maps side by side, the first titled 'Heswall', and the
+        second 'Manhattan'. Black lines trace out the road network in both maps. Details of the
+        roads are relatively clear in Heswall, but bleed together and cannot be made out in
+        Manhattan.</description>
+      </image>
+    </figure>
+
+    <p>
+      What we have is two <c>sf</c> objects containing linestrings. Linear networks indeed can be
+      represented in R by simple features with <c>sf</c> as here, or with the class
+      <c>SpatialLines</c> of package <c>sp</c>. However, for us to be able to do a particular
+      kind of analysis and some geospatial operations on this network we often will need a clear
+      topology: we will need the data to be stored as a network graph. In other words, we need to
+      move from linestrings to a linear graphical network representation, with edges (for example,
+      representing street segments) and nodes (vertices indicating where they start and end).
+    </p>
+
+    <p>
+      This can be done by virtue of manual editing, which in large networks may be prohibitive,
+      fully automatized, or automatized with manual edits just to correct errors. Explaining how
+      to do this in detail with R would require space we do not have. Luckily, there are some good
+      tutorials out there that you can consult for this data pre-processing work.
+    </p>
+
+    <ul>
+      <li><p><xref ref="Abad_2019" text="custom">Abad et al. (2019)</xref> explain how to
+        use the packages <c>rgrass7</c> and <c>link2GI</c> for this purpose. These packages bridge
+        R to GRASS GIS software. So for this approach to work, you would require this software to
+        be installed in your machine. Fortunately, GRASS GIS is freely available.</p></li>
+      <li><p>The vignettes for <c>sfnetworks</c> also cover how to turn a linestring <c>sf</c>
+        object into a network. The function <c>as_sfnetwork()</c> provides the basic
+        functionality for this. This package also includes several additional functions for
+        cleaning the resulting network, and there is a specific vignette documenting these
+        (<xref ref="Vandemeer_2021" text="custom">van der Meer et al., 2021</xref>).</p></li>
+      <li><p><xref ref="BrizRedon_2019a" text="custom">Briz-Redón et al. (2019a)</xref>
+        developed the <c>SpNetPrep</c> ("Spatial Network Preprocessing"). This package will open
+        a Shiny application in RStudio that will allow for network creation and edition, network
+        direction endowment and point pattern revision and modification. The key aim of this
+        package is to allow for manual edits of the constructed network to correct for
+        errors.</p></li>
+    </ul>
+
+    <p>
+      We quickly show below the <c>as_sfnetwork()</c> function with the road network in
+      Kensington (which will generate an object of class <c>sfnetwork</c>) so that you get a
+      sense for the look of a spatial network. But for further details on network construction and
+      pre-processing, it is important you see the documentation, as well as the other materials
+      cited above.
+    </p>
+
+    <program language="r">
+      <input>
+heswall_ntwk &lt;- as_sfnetwork(heswall_lines)
+plot(heswall_ntwk)
+      </input>
+    </program>
+
+    <figure>
+      <caption>Heswall as a spatial network</caption>
+      <image source="figure-ch08/ch8-3.png">
+        <description>Numerous black dots outline a shape resembling Heswall's road network seen
+        in the previous figure. Examining more closely, the road network is still present beneath
+        the dots, though mostly covered.</description>
+      </image>
+    </figure>
+
+    <p>
+      Once you have a spatial network that has been properly cleaned and prepared as discussed in
+      the references above, there are a number of things you can do with it. You can apply
+      geospatial operations, such as blending points into the edges, segmenting the edges, running
+      spatial filters, etc. You can also apply standard social network analysis techniques and
+      measures (such as centrality, measuring shortest path). Illustrations of these applications
+      are available in the vignettes for <c>sfnetworks</c>
+      (<xref ref="Vandemeer_2021" text="custom">van der Meer et al., 2021</xref>) and in
+      <xref ref="Abad_2019" text="custom">Abad et al. (2019)</xref>.
+    </p>
+
+    <p>
+      Another format for linear networks in R is <c>linnet</c> used by the package
+      <c>spatstat</c>. When what we want is to do analysis not of the network itself, but of the
+      location of points (such as crime events) along the network, <c>spatstat</c> is the way to
+      go, and so we would need to ensure we store the data in formats that are required by this
+      package. Statistical analysis of events along these networks is of key interest for crime
+      analysts. In the next section we will explain how to perform density estimation along
+      networks.
+    </p>
+
+  </section>
+
+  <section xml:id="sec-ch8-density">
+    <title>Density estimation along networks</title>
+
+    <p>
+      One way of estimating the intensity of crime along spatial networks is to use kernel density
+      estimation methods. You could, as we did in Chapter 7, use standard kernel density
+      estimation methods, but this ignores the underlying structure in the data. As Jeremy Gelb
+      indicates in the vignette for <c>spNetwork</c>, there are a number of problems with this
+      cruder approach:
+    </p>
+
+    <blockquote>
+      <p>
+        Calculating density values for locations outside the network is meaningless and the
+        Euclidean distance underestimates the real distance between two objects on the network.
+        Moreover, networks are not isotropic spaces. In other words, it is not possible to move
+        in every direction, but only along the edges of the network
+        (<xref ref="Gelb_2021" text="custom">Gelb, 2021</xref>).
+      </p>
+    </blockquote>
+
+    <p>
+      Smoothing through kernel density estimation in linear networks is an area of active
+      development and a number of approaches have been proposed over recent years, some of which
+      provide a pragmatic (heuristic) solution, but "their properties are not well understood,
+      statistical insight is lacking," and "computational cost is high"
+      (<xref ref="McSwiggan_2016" text="custom">McSwiggan et al., 2016</xref>, p. 325). The
+      existing software implementation of the "traditional" algorithms that have been developed
+      can deal with small datasets, but may become prohibitive when dealing with larger datasets.
+      More recent algorithms aim to provide faster solutions for larger datasets without seriously
+      compromising performance (see
+      <xref ref="Rakshit_2019" text="custom">Rakshit et al., 2019</xref>). You can currently
+      do this in R with at least two separate packages <c>spatstat</c> and the newer
+      <c>spNetwork</c>. For reasons of space, given that it provides a more general framework for
+      point pattern analysis and a wider selection of (more principled) approaches, we will only
+      cover <c>spatstat</c> here.
+    </p>
+
+    <p>
+      In <c>spatstat</c> a point pattern on a linear network is represented by an object of class
+      <c>lpp</c> (stands for point pattern in a linear network). The functions <c>lpp()</c> and
+      <c>as.lpp()</c> convert raw data into an object of class <c>lpp</c>. The two needed
+      arguments are a matrix or data frame with the coordinates of the points (or alternatively a
+      <c>ppp</c> object that we discussed in Chapter 7) and a linear network of class
+      <c>linnet</c>.
+    </p>
+
+    <p>
+      The <c>linnet</c> object will represent the network of a set of line segments, containing
+      information about each of these segments (edges) and its vertices (nodes). You can generate
+      a <c>linnet</c> object from a <c>SpatialLines</c> (<c>sp</c>) object using
+      <c>as.linnet.SpatialLines()</c>. If you need to process this network before it is ready,
+      you can do so with some functions from <c>spatstat</c> or <c>SpnetPrep</c> as preferable
+      (and only then create your <c>linnet</c> object).
+    </p>
+
+    <p>
+      We will show here how to transform a <c>SpatialLines</c> object into <c>linnet</c> and how,
+      then, we generate a <c>lpp</c> object.
+    </p>
+
+    <program language="r">
+      <input>
+# transform to projected coordinates (British National Grid)
+heswall_lines &lt;- st_transform(heswall_lines, crs = 27700)
+# make into sp object
+heswall_roads_sp &lt;- as(heswall_lines, 'Spatial')
+# turn into line network (linnet)
+heswall_roads_linnet &lt;- as.linnet.SpatialLines(heswall_roads_sp)
+      </input>
+    </program>
+
+    <p>
+      Now let's get some crime data to link to this line network. We can find this from the open
+      data portal data.police.uk and choose to get data from Merseyside police, who cover this
+      area. For the sake of practice here, one year's worth of data is included with the datasets
+      available with this textbook (see Preamble). The file is <c>merseyside_asb.csv</c>.
+    </p>
+
+    <program language="r">
+      <input>
+# read in asb data
+shoplifting &lt;- read_csv("data/merseyside_shoplifting.csv")
+
+# transform to spatial object
+shoplifting_sf &lt;- st_as_sf(shoplifting,
+                           coords = c("longitude", "latitude"),
+                           crs = 4326)
+# transform to match projection of lines
+shoplifting_sf &lt;- st_transform(shoplifting_sf, crs = st_crs(heswall_lines))
+# plot them together to have a look
+ggplot() +
+  geom_sf(data = heswall_lines) +
+  geom_sf(data = shoplifting_sf, colour = "red") +
+  theme_void()
+      </input>
+    </program>
+
+    <figure>
+      <caption>All shoplifting incidents in Merseyside from May 2019 to April 2020</caption>
+      <image source="figure-ch08/ch8-4.png">
+        <description>A simple line street map of Heswall is now accompanied by red dots spreading
+        far above and to the right as well. A concentration of red dots with a vertical gap
+        towards the middle of the figure probably corresponds to Liverpool.</description>
+      </image>
+    </figure>
+
+    <p>
+      We can see that Merseyside Police cover a lot more than just Heswall, so we can use the
+      bounding box around the roads to subset our crime data:
+    </p>
+
+    <program language="r">
+      <input>
+# create a bounding box around the heswall lines geometry
+heswall_bb &lt;- st_bbox(heswall_lines) %&gt;% st_as_sfc()
+# subset using the bounding box
+heswall_shoplifting &lt;- st_intersection(shoplifting_sf, heswall_bb)
+      </input>
+    </program>
+
+    <p>
+      Now that we have the line network and the shoplifting incidents in Heswall, we can create
+      our lpp object. First we create a ppp (point pattern) object, following the steps we
+      learned in Chapter 7 on spatial point patterns:
+    </p>
+
+    <program language="r">
+      <input>
+# create a window
+window &lt;- as.owin(heswall_roads_linnet)
+# extract coordinates
+shoplifting_coords &lt;- matrix(unlist(heswall_shoplifting$geometry), ncol = 2, byrow = T)
+# make into ppp
+shoplifting_ppp &lt;- ppp(x = shoplifting_coords[,1], y = shoplifting_coords[,2],
+               window = window, check = T)
+      </input>
+    </program>
+
+    <p>
+      Now that we have the <c>ppp</c> object, we can use it to create our <c>lpp</c> object
+      (notice that, as noted above, there are other ways to input your points when creating a
+      <c>lpp</c> object) and then plot it. There are 264 locations, some of which represent up to
+      6 incidents. This is likely the result of geomasking due to privacy concerns
+      (<xref ref="Tompson_2015" text="custom">Tompson et al., 2015</xref>).
+    </p>
+
+    <program language="r">
+      <input>
+# now use this and previously created linnet to make lpp object
+shoplifting_lpp &lt;- lpp(shoplifting_ppp, heswall_roads_linnet, window = window)
+      </input>
+    </program>
+
+    <p>
+      Now we can calculate the density and visualise. Like we did before, we can estimate the
+      density of data points along the networks using Kernel estimation with
+      <c>density.lpp()</c>. This is an area of <c>spatstat</c> that has seen significant
+      development in the latest release. Depending on the arguments passed to the function, a
+      different algorithm will be employed to estimate the density.
+    </p>
+
+    <program language="r">
+      <input>
+# calculate density
+d100 &lt;- density.lpp(shoplifting_lpp, 100, finespacing=FALSE)
+# plot
+plot(d100)
+      </input>
+    </program>
+
+    <figure>
+      <caption>Network density map with defaults</caption>
+      <image source="figure-ch08/ch8-5.png">
+        <description>A pixelated street map of Heswall is titled 'd100'. A legend to the right
+        matches a gradient from dark blue to red to yellow, with values from zero to nearly point
+        zero eight. The lines corresponding to the streets on the map are themselves shaded,
+        mostly dark blue. A few red areas can be seen, along with one yellow pixel.</description>
+      </image>
+    </figure>
+
+    <program language="r">
+      <input>
+plot(d100, style="width")
+      </input>
+    </program>
+
+    <figure>
+      <caption>Network density map with defaults with line width</caption>
+      <image source="figure-ch08/ch8-6.png">
+        <description>The line street map of Heswall, titled 'd100'. Some of the streets seem
+        thicker or as if they had blotches on them. To the right, a legend matches four increasing
+        examples of line widths to the numbers zero, point zero two, point zero four, and point
+        zero six.</description>
+      </image>
+    </figure>
+
+    <p>
+      A <c>lpp</c> object contains the linear network information, the spatial coordinates of the
+      data points, and any number of columns of <em>marks</em> (in this case, the mark is telling
+      us the type of crime we are dealing with). It also contains the local coordinates <c>seg</c>
+      and <c>tp</c> for the data points. The local coordinate <c>seg</c> is an integer
+      identifying the particular street segment the data point is located in. A segment is each
+      of the sections of a street between two vertices (marking the intersection with another
+      segment). The local coordinate <c>tp</c> is a real number between 0 and 1 indicating the
+      position of the point within the segment: <c>tp=0</c> corresponds to the first endpoint and
+      <c>tp=1</c> corresponds to the second endpoint.
+    </p>
+
+    <p>
+      The visual inspection of the map suggests that the intensity of crime along the network is
+      not spatially uniform. Alternatively one could use the new specific functions for each of
+      these different algorithms: <c>densityQuick()</c> (see
+      <xref ref="Rakshit_2019" text="custom">Rakshit et al., 2019</xref>),
+      <c>densityEqualSplit()</c> (see
+      <xref ref="Okabe_2012" text="custom">Okabe and Sugihara, 2012</xref>), or
+      <c>densityHeat()</c> (see
+      <xref ref="McSwiggan_2016" text="custom">McSwiggan et al., 2016</xref>).
+    </p>
+
+    <p>
+      The Okabe-Sugihara method was the first to be developed for this kind of applications and
+      can be invoked with <c>densityEqualSplit()</c>. We can specify the kernel (the default is
+      <c>epanechnikov</c>) and the smoothing bandwidth, sigma (the standard deviation of the
+      kernel). Above, we used 100 metres for illustration, but see <em>Chapter 7: Spatial Point
+      Patterns of Crime Events</em> in this book for details on these parameters. There are two
+      versions of this algorithm, the continuous that is excruciatingly slow (particularly for
+      larger datasets) and the discontinuous that is a bit quicker but has less desirable
+      statistical properties. We are using the number of events per point as the weight for
+      computation, and wrapping everything on <c>system.time()</c> to provide a notion of
+      computation time. We will only show the discontinuous version.
+    </p>
+
+    <program language="r">
+      <input>
+system.time(d_okabe &lt;- densityEqualSplit(shoplifting_lpp,
+                                         weights = marks(shoplifting_lpp),
+                                         sigma = 100,
+                                         continuous = FALSE,
+                                         verbose= FALSE))
+      </input>
+    </program>
+    <console>
+      <output>##    user  system elapsed 
+##   9.381   0.154   9.550</output>
+    </console>
+
+    <p>
+      And to visualise:
+    </p>
+
+    <program language="r">
+      <input>
+plot(d_okabe, main="Okabe-Sugihara (disc.)")
+      </input>
+    </program>
+
+    <figure>
+      <caption>Network density map (Okabe-Sugihara (disc.) method)</caption>
+      <image source="figure-ch08/ch8-7.png">
+        <description>A pixelated street map of Heswall is titled 'Okabe-Sugihara (disc.)'. A
+        legend to the right matches a gradient from dark blue to red to yellow, with values from
+        zero to about point one. The lines corresponding to the streets on the map are themselves
+        shaded, mostly dark blue. A few lighter blue areas are visible, reaching purple in a few
+        spots. In addition, the ends of two streets to the top right brighten to
+        yellow.</description>
+      </image>
+    </figure>
+
+    <p>
+      <xref ref="McSwiggan_2016" text="custom">McSwiggan et al. (2016)</xref> subsequently
+      developed an algorithm that is equivalent to the Okabe-Sugihara method using the continuous
+      rule applied to the Gaussian kernel, and therefore has more desirable properties than the
+      equal split discontinuous, but that runs faster (than the Okabe-Sugihara equal split
+      continuous version).
+    </p>
+
+    <program language="r">
+      <input>
+system.time(d_mcswiggan &lt;- densityHeat.lpp(shoplifting_lpp,
+                                    weights = marks(shoplifting_lpp),
+                                    sigma = 100,
+                                    finespacing=FALSE))
+      </input>
+    </program>
+    <console>
+      <output>##    user  system elapsed 
+##   1.085   0.007   1.093</output>
+    </console>
+
+    <program language="r">
+      <input>
+plot(d_mcswiggan, main="McSwiggan")
+      </input>
+    </program>
+
+    <figure>
+      <caption>Network density map (McSwiggan Gaussian method)</caption>
+      <image source="figure-ch08/ch8-8.png">
+        <description>Like the previous figure, we have a shaded street map of Heswall titled
+        'McSwiggan', with a similar legend. Amidst the dark blue, a few areas of lighter blue
+        appear, as well as several red to purple spots. One area towards the top right reaches
+        yellow.</description>
+      </image>
+    </figure>
+
+    <p>
+      Finally, as noted above,
+      <xref ref="Rakshit_2019" text="custom">Rakshit et al. (2019)</xref> developed a fast
+      algorithm, using a convolution method, that is particularly helpful with large datasets. The
+      analysis of the authors suggest this estimator "is consistent, and its statistical
+      efficiency is only slightly suboptimal"
+      (<xref ref="Rakshit_2019" text="custom">Rakshit et al., 2019</xref>).
+    </p>
+
+    <program language="r">
+      <input>
+system.time(d_rakshit &lt;- densityQuick.lpp(shoplifting_lpp,
+                                    weights = marks(shoplifting_lpp),
+                                    sigma = 100,
+                                    edge2D = TRUE))
+      </input>
+    </program>
+    <console>
+      <output>##    user  system elapsed 
+##   0.250   0.002   0.254</output>
+    </console>
+
+    <p>
+      We can now plot the data and compare the results:
+    </p>
+
+    <program language="r">
+      <input>
+plot(d_rakshit, main="Rakshit")
+      </input>
+    </program>
+
+    <figure>
+      <caption>Network density map (Rakshit method)</caption>
+      <image source="figure-ch08/ch8-9.png">
+        <description>Once again we have a shaded street map of Heswall titled 'Rakshit', with a
+        similar legend, which ranges from zero to point two five this time. Most of Heswall is
+        dark blue, with only the ends of two roads near the top right brightening to
+        yellow.</description>
+      </image>
+    </figure>
+
+    <p>
+      So these are some ways in which we can create a density map of crime along networks. You
+      can compare the three maps to see how choice of method affects conclusions. This is
+      something we must always reflect on, when applying these techniques.
+    </p>
+
+    <subsection xml:id="subsec-ch8-adding-context">
+      <title>Adding context</title>
+
+      <p>
+        Another thing you might like to do is add some context to explore where these hot spots
+        are. Similar to how we did this with our KDE in continuous space in Chapter 7, we can use
+        the raster and leaflet packages here too. One difference, we must also use the
+        <c>as.im()</c> function to make sure our heatmap is of class "im".
+      </p>
+
+      <program language="r">
+        <input>
+# convert to raster wrapped inside as.im() function
+r1 &lt;- raster(as.im(d_mcswiggan))
+#remove very low density values
+r1[r1 &lt; 0.0001 ] &lt;- NA
+# set CRS
+crs(r1) &lt;- "EPSG:27700"
+
+#create a colour palette
+pal &lt;- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"),
+                    values(r1), na.color = "transparent")
+
+
+#and then make map!
+leaflet() %&gt;%
+  addTiles() %&gt;%
+  addRasterImage(r1, colors = pal, opacity = 0.8) %&gt;%
+  addLegend(pal = pal, values = values(r1),
+    title = "Shoplifting map")
+        </input>
+      </program>
+
+      <figure>
+        <caption>Add interactive basemap to explore hot spots</caption>
+        <image>
+          <description>A leaflet map of Heswall and area, with a legend in the top right labeled
+          'Shoplifting map' matching a gradient from dark blue at zero to lighter blue at point
+          zero seven. Several blotches of darker blue are spread throughout the city, bleeding
+          into lighter blue a few times.</description>
+        </image>
+      </figure>
+
+    </subsection>
+
+  </section>
+
+  <section xml:id="sec-ch8-visualising">
+    <title>Visualising crime distribution along networks</title>
+
+    <p>
+      To demonstrate some simpler approaches to visualising crime distribution along networks, we
+      can zoom in a little bit on Heswall town centre. The coordinates for that are: 53.3281041,
+      -3.1025683. Let's build a buffer.
+    </p>
+
+    <program language="r">
+      <input>
+# create a df of one central point
+heswall_tc &lt;- data.frame(longitude = -3.1025683,
+                         latitude = 53.3281041)
+
+# create a buffer by making point into sf object
+heswall_tc_buffer &lt;- st_as_sf(heswall_tc,
+                       coords = c("longitude", "latitude"),
+                       crs = 4326) %&gt;%
+  st_transform(., 27700) %&gt;% # project to BNG (for metres)
+  st_buffer(., 1000)  # build 1km buffer
+      </input>
+    </program>
+
+    <program language="r">
+      <input>
+# select roads that go through town centre
+heswall_tc &lt;- st_intersects(heswall_tc_buffer, heswall_lines)
+heswall_tc &lt;- heswall_lines[unlist(heswall_tc),]
+# select shoplifting incidents in town centre
+tc_shoplifting &lt;- st_intersects(heswall_tc_buffer, heswall_shoplifting)
+tc_shoplifting &lt;- heswall_shoplifting[unlist(tc_shoplifting),]
+
+ggplot() +
+  geom_sf(data = heswall_tc) +
+  geom_sf(data = tc_shoplifting, col = "red") +
+  geom_sf(data = heswall_tc_buffer, col = "blue", fill = NA) +
+  theme_void()
+      </input>
+    </program>
+
+    <figure>
+      <caption>Narrow focus on Heswall town centre</caption>
+      <image source="figure-ch08/ch8-10.png">
+        <description>A section of the street line map of Heswall, mostly contained within a
+        large blue circle. A number of red dots appear inside this circle, near the centre and
+        towards the right, with one outlier to the north and one to the south.</description>
+      </image>
+    </figure>
+
+    <subsection xml:id="subsec-ch8-hot-routes">
+      <title>Hot Routes</title>
+
+      <p>
+        In order to map hot spots along a network, we can use a technique called <em>hot
+        routes</em>. Hot routes were devised to be a straightforward spatial technique that
+        analyses crime patterns that are associated with a linear network (e.g., streets and other
+        transportation networks). It allows an analyst to map crime concentrations along different
+        segments of the network and visualise this through colour. We can create a hot routes
+        visualisation by thematically shading each street segment with a colour (and line
+        thickness if desired) that corresponds to the range of the rate of crime per metre. It was
+        used by <xref ref="Newton_2008" text="custom">Newton (2008)</xref> to map crime and
+        disorder on the bus network in Merseyside. A useful how-to guide on using hot routes was
+        later produced by
+        <xref ref="Tompson_2009" text="custom">Tompson et al. (2009)</xref>. In it they
+        break down the process into four stages:
+      </p>
+
+      <ul>
+        <li><p>Step 1. Preparing the network layer</p></li>
+        <li><p>Step 2. Linking crime events to street segments</p></li>
+        <li><p>Step 3. Calculating a rate</p></li>
+        <li><p>Step 4. Visualising the results</p></li>
+      </ul>
+
+      <p>
+        We can follow those steps here.
+      </p>
+
+      <subsubsection xml:id="subsubsec-ch8-hr-prepare">
+        <title>Preparing the network layer</title>
+
+        <p>
+          The prerequisite to visualising hot routes is to have a network layer which meets
+          certain conditions. For example,
+          <xref ref="Tompson_2009" text="custom">Tompson et al. (2009)</xref> advise that
+          since network layers typically contain streets of unequal length, longer segments might
+          show up as hot simply because they have more space to contain more crimes. Therefore in
+          such cases, it is advisable in this analysis to use equal length street segments, where
+          possible. To address this, they segment their study area into 1 metre length segments
+          using a grid overlay. Another approach is to calculate a rate per metre, instead of
+          count, so that's the approach we will take here.
+        </p>
+
+        <p>
+          Another requirement is that the network layer has a unique identifier for each segment.
+          One quick way to do this, if your data don't already contain such a column is to create
+          a column that just numbers each row from 1 to the number of observations (rows) in the
+          data frame. Even if you have such a unique identifier, having the row name to a numeric
+          column is required for joining the crimes to the street segments in the next step.
+        </p>
+
+        <program language="r">
+          <input>
+# create numeric unique id column
+heswall_tc$unique_id &lt;- 1:nrow(heswall_tc)
+          </input>
+        </program>
+
+      </subsubsection>
+
+      <subsubsection xml:id="subsubsec-ch8-hr-link">
+        <title>Link crime events to street segments</title>
+
+        <p>
+          One approach to solve this is to snap each shoplifting incident to the nearest street
+          segment. We can use the <c>st_nearest_feature()</c> function that will create a list of
+          the ID number of the nearest street segment for each crime incident in our
+          <c>tc_shoplifting</c> object.
+        </p>
+
+        <program language="r">
+          <input>
+nearest_segments &lt;- st_nearest_feature(tc_shoplifting, heswall_tc)
+          </input>
+        </program>
+
+        <p>
+          This new object is simply a list of the ID numbers of matched line segments for each of
+          the ASB incidents. For example, here is the ID number of the nearest street segment for
+          the first five ASB incidents in our data:
+        </p>
+
+        <program language="r">
+          <input>
+nearest_segments[1:5]
+          </input>
+        </program>
+<pre>
+## [1] 315 315  65 317 317
+</pre>
+        <p>
+          We can use this to create a frequency table which counts the number of ASB incidents
+          linked to each street segment (by virtue of being nearest to it).
+        </p>
+
+        <program language="r">
+          <input>
+#make list of nearest into df of frequency
+nearest_freq &lt;- as.data.frame(table(nearest_segments))
+#make sure id is numeric
+nearest_freq$nearest_segments &lt;- as.numeric(
+  as.character(
+    nearest_freq$nearest_segments
+    )
+  )
+nearest_freq[1:3,]
+          </input>
+        </program>
+<pre>
+##   nearest_segments Freq
+## 1                1    1
+## 2               17    3
+## 3               27    3
+</pre>
+        <p>
+          We can see here some examples of the number of shoplifting incidents snapped to each
+          segment. Now we can join this to our spatial layer:
+        </p>
+
+        <program language="r">
+          <input>
+#join to sections object and replace NAs with 0s
+heswall_tc &lt;- left_join(heswall_tc,
+                       nearest_freq,
+                       by = c("unique_id" = "nearest_segments")) %&gt;%
+  mutate(Freq = replace_na(Freq, 0))
+          </input>
+        </program>
+
+        <p>
+          We can produce a quick visualisation to check that everything linked OK before moving on
+          to compute a rate normalising for length of street segment.
+        </p>
+
+        <program language="r">
+          <input>
+ggplot() +
+  geom_sf(data = heswall_tc,
+          aes(colour = Freq), lwd = 0.5) +
+  theme_void() +
+  scale_colour_gradient2(name = "Number of shoplifting incidents",
+                         midpoint = 1,
+                         low = "#2166ac",
+                         mid = "#d1e5f0",
+                         high = "#b2182b")
+          </input>
+        </program>
+
+        <figure>
+          <caption>Check that crimes are linked to street segments</caption>
+      <image source="figure-ch08/ch8-11.png">
+            <description>A street line map of the centre of Heswall, like in the previous
+            figure. A legend to the right is titled 'Number of shoplifting incidents', and
+            matches a gradient from red to light blue with numbers from eight to zero. Most of
+            the roads are shaded light blue, though one major road bisecting the centre, running
+            from the top left to bottom right, turns more red at times. In addition, some roads
+            branching off from that one, and some other ones two roads over also have red hues.
+            One small road to the north is also red.</description>
+          </image>
+        </figure>
+
+        <p>
+          Looks like we joined the shoplifting incidents to our network layer successfully. Now
+          let's normalise for the varying length of the street segments.
+        </p>
+
+      </subsubsection>
+
+      <subsubsection xml:id="subsubsec-ch8-hr-rate">
+        <title>Calculating a rate</title>
+
+        <p>
+          In order to calculate a rate we need the numerator, number of shoplifting incidents,
+          which we joined above, and a denominator to divide by. To control for varying length of
+          the street segments, we might want to consider this length as a suitable denominator. So
+          we need to calculate this for each segment. To achieve this, we can use the
+          <c>st_length()</c> function.
+        </p>
+
+        <program language="r">
+          <input>
+heswall_tc$length &lt;- st_length(heswall_tc)
+          </input>
+        </program>
+
+        <p>
+          Now we have a column in the data which shows the length of each segment in metres (as we
+          are working with projected coordinates). We can see this if we print out one of the
+          values:
+        </p>
+
+        <program language="r">
+          <input>
+heswall_tc$length[1]
+          </input>
+        </program>
+<pre>
+## 729.8 [m]
+</pre>
+
+        <p>
+          To use it in our calculation, we need this to be a numeric variable, so let's transform
+          it, and then use it as our denominator to calculate our rate of crimes per metre of
+          street segment length:
+        </p>
+
+        <program language="r">
+          <input>
+heswall_tc$length &lt;- as.numeric(heswall_tc$length)
+heswall_tc$shoplifting_rate &lt;- heswall_tc$Freq / heswall_tc$length
+          </input>
+        </program>
+
+        <p>
+          Now we have a measure of incidents per metre. Finally, we can move to visualise the
+          results.
+        </p>
+
+      </subsubsection>
+
+      <subsubsection xml:id="subsubsec-ch8-hr-visualise">
+        <title>Visualise the results</title>
+
+        <p>
+          This is very similar to how we carried out a visual check earlier, but this time using
+          our rate as the value to present.
+        </p>
+
+        <program language="r">
+          <input>
+ggplot() +
+  geom_sf(data = heswall_tc, aes(colour = shoplifting_rate),
+          lwd = 0.5, alpha = 0.8) +
+  theme_void() +
+  scale_colour_gradient2(name = "Shoplifting incidents per metre",
+                         midpoint = mean(heswall_tc$shoplifting_rate),
+                         low = "#2166ac", mid = "#d1e5f0",
+                         high = "#b2182b")
+          </input>
+        </program>
+
+        <figure>
+          <caption>Hot routes map displaying rate of crimes per metre for each segment</caption>
+      <image source="figure-ch08/ch8-12.png">
+            <description>A map that looks very similar to the previous figure, with the legend
+            labeled 'Shoplifting incidents per metre', ranging from zero to point zero six. The
+            longer roads, such as the one running from the top left to the bottom right, are less
+            red than before, whereas some of the side roads branching off have become a darker
+            red. The small road to the far north that was red previously has also become darker,
+            and another short road in the south has also taken on a light red hue.</description>
+          </image>
+        </figure>
+
+        <p>
+          We can now see that the longer road there (Telegraph Road) is no longer so dominant
+          once we've controlled for length.
+        </p>
+
+        <p>
+          Now this might also be as if it's a long road it will have a bigger denominator, and as we're dealing with few crimes here, it might be that artifically dilutes the crime rate. If you suspect this might be the case, then the segmentation might be a better approach, and then refer back to the paper by
+          <xref ref="Tompson_2009" text="custom">Tompson et al. (2009)</xref> for guidance on
+          that.
+        </p>
+
+        <p>
+          In any case, we have now created a hot routes visualisation, that helps us map where
+          crime rates are higher along a network. We can add some variations to this if we like;
+          for example we could adjust the width of the segments as well as the colour, although
+          this doesn't always look the best as it distorts the street network:
+        </p>
+
+        <program language="r">
+          <input>
+ggplot() +
+  geom_sf(data = heswall_tc,
+          aes(colour = shoplifting_rate, size = shoplifting_rate),
+          alpha = 0.8) +
+  theme_void() +
+  scale_colour_gradient2(name = "Shoplifting incidents per metre",
+                         midpoint = mean(heswall_tc$shoplifting_rate),
+                         low = "#2166ac", mid = "#d1e5f0",
+                         high = "#b2182b") +
+  scale_size_continuous(name = "Rate of crimes per metre (width)")
+          </input>
+        </program>
+
+        <figure>
+          <caption>Hot routes map displaying rate of crimes per metre for each segment with line
+          width as well as colour</caption>
+      <image source="figure-ch08/ch8-13.png">
+            <description>The previous figure has been slightly altered, and has gained a second
+            legend labeled 'Rate of crimes per metre (width)', matching four examples of line
+            widths to numbers from zero to point zero six. The width of streets shaded darker has
+            grown, with some of the more red streets being wider than their length.</description>
+          </image>
+        </figure>
+
+      </subsubsection>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch8-street-profile">
+      <title>Street Profile Analysis</title>
+
+      <p>
+        Visualising crime along networks presents an important first step in identifying crime
+        concentration. It may not always be necessary to include the geographic component of a
+        spatial network for the purposes of crime analysis in these networks. Instead, another
+        approach could be to make use of street profile analysis introduced by
+        <xref ref="Spicer_2016" text="custom">Spicer et al. (2016)</xref>. Street profile
+        analysis was initially developed as a method for visualising temporal and spatial crime
+        patterns along major roadways in metropolitan areas. The idea is that the geographical
+        location of the street may not actually be as important as the ability to visualise data
+        from multiple years in a comparable way. So the approach is to treat the street in
+        question as the x-axis of a graph, with a start point (A) and end point (B) breaking it
+        into some interval. Then, you can visualise how crime is distributed along this street by
+        plotting count or rate of crimes on the y-axis, and have multiple lines for different
+        years for example. You can add context by re-introducing some key intersections, or other
+        points of interest. In their paper, Spicer and colleagues demonstrate this using the
+        example of Kingsway Avenue in Vancouver, BC. In this section we will go through how we
+        can apply street profile analysis in R. We will follow the same four steps we did for the
+        hot routes tutorial:
+      </p>
+
+      <ul>
+        <li><p>Step 1: Prepare the network layer</p></li>
+        <li><p>Step 2: Link crime events to points of interest</p></li>
+        <li><p>Step 3: Calculate a rate</p></li>
+        <li><p>Step 4: Visualise the results</p></li>
+      </ul>
+
+      <subsubsection xml:id="subsubsec-ch8-spa-prepare">
+        <title>Prepare the network layer</title>
+
+        <p>
+          The strength of this approach is to focus on one area of interest. Here let's choose
+          Telegraph Road. It is a long street which runs through the town centre. To subset it, we
+          can use the names provided by the volunteers of Open Street Map, available in the
+          <c>name</c> column:
+        </p>
+
+        <program language="r">
+          <input>
+telegraph_rd &lt;- heswall_tc %&gt;% filter(name == "Telegraph Road")
+          </input>
+        </program>
+
+        <p>
+          The geometry we have is already separated into seven segments. This is just how we
+          downloaded from OSM. We see there are seven segments, but they don't necessarily
+          correspond to anything specific. In Street Profile Analysis we want to be conscious
+          about how we divide up the segment. In their paper,
+          <xref ref="Spicer_2016" text="custom">Spicer et al. (2016)</xref> just segment into
+          100-metre lengths. Another thing we might be interested in is to slice into segments
+          wherever there is an intersection with another road. Here let's use the intersections as
+          a way to divide our street into segments.
+        </p>
+
+        <p>
+          To do this, we create an object of the intersecting streets; let's call this object
+          <c>tr_intersects</c>.
+        </p>
+
+        <program language="r">
+          <input>
+# and select also the cross streets into separate object
+tr_intersects &lt;- st_intersects(telegraph_rd, heswall_tc)
+# subsetting
+tr_intersects &lt;- heswall_tc[unlist(tr_intersects),]
+# remove Telegraph Road itself
+tr_intersects &lt;- tr_intersects %&gt;% filter(name != "Telegraph Road")
+          </input>
+        </program>
+
+        <p>
+          We can plot our segments to see whether they correspond to these intersections:
+        </p>
+
+        <program language="r">
+          <input>
+ggplot() +
+  geom_sf(data = tr_intersects, lwd = 0.5) +
+  geom_sf(data = telegraph_rd, aes(colour = osm_id), lwd = 1.5, alpha = 0.8) +
+  theme_void() + theme(legend.position = "none")
+          </input>
+        </program>
+
+        <figure>
+          <caption>Default OSM segments of Telegraph Road versus intersections</caption>
+      <image source="figure-ch08/ch8-14.png">
+            <description>A small part of a line map, in particular the road running from the top
+            left to the bottom right in the previous figures, along with roads branching off of
+            it. The main road is broken into seven colours, while there are about fifteen to
+            twenty roads branching off from it in thinner black lines.</description>
+          </image>
+        </figure>
+
+        <p>
+          We can see that they do not correspond to all the intersections. Unfortunately, we will
+          have to carry out some data cleaning. To do this, first we unite the entire street into
+          one, and then use the intersections to divide into the appropriate segments.
+        </p>
+
+        <program language="r">
+          <input>
+# unite the segments into one long street
+telegraph_rd_u &lt;- telegraph_rd %&gt;%
+  group_by(name) %&gt;%
+  st_union() %&gt;%
+  st_cast("LINESTRING")
+
+# use st_split and st_combine to split into parts by intersecting roads
+library(lwgeom)
+parts &lt;- st_split(telegraph_rd_u, st_combine(tr_intersects$geometry)) %&gt;%
+  st_collection_extract("LINESTRING")
+
+# combine the parts into one shapefile
+datalist = list()
+for (i in 1:length(parts)) {
+
+  datalist[[i]] &lt;- st_as_sf(data.frame(section = i),
+                            geometry = st_geometry(parts[i]))
+
+}
+tr_sections &lt;- do.call(rbind, datalist)
+          </input>
+        </program>
+
+        <p>
+          In the above code we do a lot, but it means we end up with a geometry where the segments
+          were defined by us, with the rationale that we should segment at each intersection.
+          Whether you use this method or divide at some set interval like every 100 metres is up
+          to you, but a decision made and justified is usually better than relying on defaults,
+          such as the segments from OSM.
+        </p>
+
+        <p>
+          Let's plot the new segments to see if they correspond to intersections.
+        </p>
+
+        <program language="r">
+          <input>
+ggplot() +
+  geom_sf(data = tr_intersects, lwd = 0.5) +
+  geom_sf(data = tr_sections,
+          aes(colour = as.character(section)),
+          lwd = 1.5, alpha = 0.8) +
+  theme_void() + theme(legend.position = "none")
+          </input>
+        </program>
+
+        <figure>
+          <caption>Telegraph Road segmented at each intersection</caption>
+      <image source="figure-ch08/ch8-15.png">
+            <description>The same road and branching roads from the previous figure, with the
+            main road now changing colours at every intersection.</description>
+          </image>
+        </figure>
+
+        <p>
+          This looks good. Now we can move to the next step and link our shoplifting incidents to
+          these segments.
+        </p>
+
+      </subsubsection>
+
+      <subsubsection xml:id="subsubsec-ch8-spa-link">
+        <title>Link events to street segments</title>
+
+        <p>
+          To link the shoplifting incidents, first we should filter those crimes which will be
+          relevant. For this we build a 400-metre buffer around the road, and include only those
+          shoplifting incidents which fall within this buffer (for more about buffers, see
+          <em>Chapter 2 Basic Geospatial Operations in R</em>).
+        </p>
+
+        <program language="r">
+          <input>
+tr_buffer &lt;- st_buffer(telegraph_rd_u, 400)
+
+# select shoplifting incidents in town centre
+tr_shoplifting &lt;- st_intersects(tr_buffer, tc_shoplifting)
+tr_shoplifting &lt;- tc_shoplifting[unlist(tr_shoplifting),]
+          </input>
+        </program>
+
+        <p>
+          The strength of street profiles comes out in comparing different sources of data, so
+          let's split our shoplifting incidents by season. Let's compare summer and winter.
+        </p>
+
+        <program language="r">
+          <input>
+# split seasonally (to compare later) let's focus on winter and summer
+summer_sl &lt;- tr_shoplifting %&gt;%
+  filter(month %in% c("2019-06", "2019-07", "2019-08"))
+winter_sl &lt;- tr_shoplifting %&gt;%
+  filter(month %in% c("2019-12", "2020-01", "2020-02"))
+          </input>
+        </program>
+
+        <p>
+          Then, the steps for linking the crimes are the same as we followed for hot routes above,
+          using the <c>st_nearest_feature()</c> function.
+        </p>
+
+        <program language="r">
+          <input>
+# attach summer shoplifting incidents
+nearest_segments_summer &lt;- st_nearest_feature(summer_sl, tr_sections)
+nearest_freq_summer &lt;- as.data.frame(table(nearest_segments_summer))
+nearest_freq_summer &lt;- nearest_freq_summer %&gt;%
+  mutate(nearest_segments_summer = as.numeric(
+    as.character(
+      nearest_freq_summer$nearest_segments_summer
+      )
+    )) %&gt;%
+  rename(summer_sl = Freq)
+tr_sections &lt;- left_join(tr_sections,
+                       nearest_freq_summer,
+                       by = c("section" = "nearest_segments_summer")) %&gt;%
+  mutate(summer_sl = replace_na(summer_sl, 0))
+
+
+
+# repeat for the winter
+nearest_segments_winter &lt;- st_nearest_feature(winter_sl, tr_sections)
+nearest_freq_winter &lt;- as.data.frame(table(nearest_segments_winter))
+nearest_freq_winter &lt;- nearest_freq_winter %&gt;%
+  mutate(nearest_segments_winter = as.numeric(
+    as.character(
+      nearest_freq_winter$nearest_segments_winter
+      )
+    )) %&gt;%
+  rename(winter_sl = Freq)
+tr_sections &lt;- left_join(tr_sections,
+                       nearest_freq_winter,
+                       by = c("section" = "nearest_segments_winter")) %&gt;%
+  mutate(winter_sl = replace_na(winter_sl, 0))
+          </input>
+        </program>
+
+        <p>
+          Similar to how we did with hot routes, we can carry out a visual check to make sure they
+          linked OK. We can also try to compare the two seasons on these side-by-side maps.
+        </p>
+
+        <program language="r">
+          <input>
+p1 &lt;- ggplot() +
+  geom_sf(data = tr_sections, aes(colour = summer_sl), lwd = 0.5) +
+  theme_void() +
+  scale_colour_gradient2(name = "Shoplifting in summer",
+                         midpoint = 1,
+                         low = "#2166ac", mid = "#d1e5f0", high = "#b2182b")
+p2 &lt;- ggplot() +
+  geom_sf(data = tr_sections, aes(colour = winter_sl), lwd = 0.5) +
+  theme_void() +
+  scale_colour_gradient2(name = "Shoplifting in winter",
+                         midpoint = 1,
+                         low = "#2166ac", mid = "#d1e5f0", high = "#b2182b")
+
+gridExtra::grid.arrange(p1,p2, nrow = 1)
+          </input>
+        </program>
+
+        <figure>
+          <caption>Shoplifting in summer and winter months</caption>
+      <image source="figure-ch08/ch8-16.png">
+            <description>Two plots both show one line corresponding to the main street seen in
+            previous line maps, with its segments shaded in blue and red. A legend accompanies
+            each one, the first labeled 'Shoplifting in summer', the second 'Shoplifting in
+            winter'. The legends match a gradient of blue to red from the values zero to sixteen
+            in the first plot, and zero to twelve in the second. Both roads are mostly light
+            blue, with the same central segments being a darker red. One additional segment,
+            different in each plot, further to the bottom right is also a shade of
+            red.</description>
+          </image>
+        </figure>
+
+        <p>
+          We can see there may be some differences between winter and summer, but it is unclear
+          how much.
+        </p>
+
+      </subsubsection>
+
+      <subsubsection xml:id="subsubsec-ch8-spa-rate">
+        <title>Calculate a rate</title>
+
+        <p>
+          This is the same process we used in the hot routes example above, in that we get a
+          length for each segment, and then we use this to calculate a rate for summer and winter:
+        </p>
+
+        <program language="r">
+          <input>
+tr_sections$length &lt;- st_length(tr_sections)
+
+tr_sections$summer_rate &lt;- as.numeric(tr_sections$summer_sl / tr_sections$length)
+tr_sections$winter_rate &lt;- as.numeric(tr_sections$winter_sl / tr_sections$length)
+          </input>
+        </program>
+
+      </subsubsection>
+
+      <subsubsection xml:id="subsubsec-ch8-spa-visualise">
+        <title>Visualise</title>
+
+        <p>
+          Finally, we reach the visualisation stage. To do this, we need to find the "Point A"
+          location, which will serve as our starting point to travel down Telegraph Road. Most
+          likely you will have to do this manually. In the case of a bus or railway route, you
+          know the terminus stations, so you can use these. In the case of street segments, it
+          might be more arbitrary. Here I have identified "section 3" as our starting point. Note
+          that it's not section 1 or 20, which means that the segments are not numbered
+          sequentially. This means we will have to assign an order.
+        </p>
+
+        <figure>
+          <caption>Find starting point "Point A" on the street</caption>
+      <image source="figure-ch08/ch8-17.png">
+            <description>The main road and the branching roads, all outlined in black. The top
+            left of the main road, before the first intersection, is much thicker than the rest.
+            A rounded box with the text 'Start here' is on top of the thicker segment of the
+            road.</description>
+          </image>
+        </figure>
+
+        <p>
+          To assign this order, we can take our starting point (labelled "Start here") and for
+          each line segment we can calculate the distance to this. The idea is that we can then
+          use this distance to order them from nearest to furthest.
+        </p>
+
+        <program language="r">
+          <input>
+datalist &lt;- list()
+i &lt;- 1
+for(segment_id in tr_sections$section){
+  datalist[[i]] &lt;- data.frame(section = segment_id,
+                              dist_from_a = st_distance(
+                                tr_sections %&gt;% filter(section == 3),
+                                tr_sections %&gt;%  filter(section == segment_id)))
+i &lt;- i + 1
+}
+dist_matrix &lt;- do.call(rbind, datalist)
+tr_sections &lt;- left_join(tr_sections, dist_matrix)
+
+# finally give our anchor point "a" a value of -1
+tr_sections$dist_from_a[tr_sections$section == 3] &lt;- -1
+          </input>
+        </program>
+
+        <p>
+          Now we can arrange the segments in order from Point A to Point B.
+        </p>
+
+        <p>
+          Let's plot the summer shoplifting incidents using the street profile approach. This is a
+          ggplot where the x-axis is the sequence of segments, and the y-axis is the crime rate
+          we want to portray.
+        </p>
+
+        <program language="r">
+          <input>
+ggplot(tr_sections, aes(x = reorder(as.character(section),
+                                  dist_from_a),
+                      y = summer_rate,
+                      group = 1)) +
+  geom_point() +
+  geom_line() +
+  xlab("Telegraph Road") +
+  ylab("Shoplifting incidents") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+          </input>
+        </program>
+
+        <figure>
+          <caption>Street profile with unlabelled segments</caption>
+      <image source="figure-ch08/ch8-18.png">
+            <description>A line chart over a grey grid, with vertical axis labeled 'Shoplifting
+            incidents' ranging from zero to point two five. The horizontal axis is labeled
+            'Telegraph Road', and contains numbers from one to twenty, but in a jumbled order.
+            The plot stays at zero except for three points.</description>
+          </image>
+        </figure>
+
+        <p>
+          You might notice here that the labels are not very meaningful. We could manually recode
+          each one to something better, or another approach is to try to get the name of the
+          intersecting road in order to give some meaning. To do this, we can use a little loop
+          below which will cycle through each segment, and we can find the nearest intersecting
+          road from the <c>tr_intersects</c> object.
+        </p>
+
+        <program language="r">
+          <input>
+# label the cross streets from 1 to n
+x_streets &lt;- tr_intersects %&gt;%
+   mutate(xst_id = 1:nrow(.))
+
+# loop through each segment and find the nearest intersecting road
+datalist &lt;- list()
+i &lt;- 1
+for(segment_id in tr_sections$section){
+  datalist[[i]] &lt;- data.frame(section = segment_id,
+                    x_street = st_nearest_feature(
+                      tr_sections %&gt;%
+                        filter(section == segment_id), x_streets))
+i &lt;- i + 1
+}
+# bind into a df
+nearest_matrix &lt;- do.call(rbind, datalist)
+
+# join the intersections to the street data frame
+nearest_matrix &lt;- left_join(nearest_matrix,
+                            x_streets %&gt;%
+                              dplyr::select(xst_id, name) %&gt;%
+                              st_drop_geometry(),
+                            by = c('x_street' = 'xst_id'))
+tr_sections &lt;- left_join(tr_sections, nearest_matrix,
+                       by = c("section" = "section")) %&gt;%
+  mutate(name = make.unique(name))
+          </input>
+        </program>
+
+        <p>
+          Once this is done, we can use this label on the x-axis instead of the segment ID, to
+          provide a little more context.
+        </p>
+
+        <program language="r">
+          <input>
+ggplot(tr_sections, aes(x = reorder(name,
+                                  dist_from_a),
+                      y = summer_rate,
+                      group = 1)) +
+  geom_point() +
+  geom_line() +
+  xlab("Telegraph Road") +
+  ylab("Shoplifting incidents") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+          </input>
+        </program>
+
+        <figure>
+          <caption>Street profile using intersecting roads on the x-axis</caption>
+      <image source="figure-ch08/ch8-19.png">
+            <description>The previous plot has had its horizontal axis updated, the jumbled
+            numbers replaced with names of roads. Some of the labels are repeated with a
+            fullstop and the number one appended to the end. The non-zero data points are 'The
+            Mount dot one', 'Moor Lane', and 'Beacon Lane'.</description>
+          </image>
+        </figure>
+
+        <p>
+          Now you may notice that there are some repeated names (e.g., "Thurstaston Road" and
+          "Thurstaston Road.1") where the same intersection was snapped as "nearest" to two
+          segments. In these cases the only solution is to go back to manual data cleaning,
+          unfortunately. However, this is already a nice point from which to start.
+        </p>
+
+        <p>
+          Finally, the power of the street profile analysis comes from the ease of comparison of
+          data across the route. For example, here we can compare shoplifting between winter and
+          summer:
+        </p>
+
+        <program language="r">
+          <input>
+ggplot() +
+  geom_point(data = tr_sections, aes(x = reorder(name,
+                                  dist_from_a),
+                      y = summer_rate, group = 1), col = "#2166ac") +
+  geom_line(data = tr_sections, aes(x = reorder(name,
+                                  dist_from_a),
+                      y = summer_rate, group = 1), col = "#2166ac") +
+    geom_point(data = tr_sections, aes(x = reorder(name,
+                                  dist_from_a),
+                      y = winter_rate, group = 1), col = "#b2182b") +
+  geom_line(data =  tr_sections, aes(x = reorder(name,
+                                  dist_from_a),
+                      y = winter_rate, group = 1), col = "#b2182b") +
+  scale_colour_manual(values = c("#2166ac", "#b2182b"),
+                      labels = c("Summer", "Winter")) +
+  xlab("Telegraph Road") +  ylab("Shoplifting incidents") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  guides(colour = guide_legend(title = "Season"))
+          </input>
+        </program>
+
+        <figure>
+          <caption>Street profile comparing summer and winter months</caption>
+      <image source="figure-ch08/ch8-20.png">
+            <description>The previous plot appears once again, with the previously plotted data
+            now in blue. A new set of data is plotted in red, which is nonzero at 'The Mount dot
+            one', 'The Mount', 'Moor Lane', and 'Rocky Lane South'. The maximum of the two data
+            sets match at 'Moor Lane', while 'The Mounts' nearby also appeared in both
+            sets.</description>
+          </image>
+        </figure>
+
+        <p>
+          The analyst could also add the other two seasons of spring and autumn, or compare
+          multiple sources of data about the same thing to identify where there might be areas of
+          underreporting in certain sources. For example, I used this to map fare evasion along
+          London bus routes from three different data sources. Similarly, we could compare
+          different crime types along the road, to see if robbery also peaks in these areas, or
+          maybe elsewhere. The possibilities are many, and this is where the strength of this
+          method is evident, over a map, where only one variable at one time can be displayed.
+        </p>
+
+      </subsubsection>
+
+    </subsection>
+
+  </section>
+
+  <section xml:id="sec-ch8-concentration">
+    <title>Quantifying crime concentration at micro-places</title>
+
+    <p>
+      So far we have shown ways to visualise crime along a network, but what if we want to
+      actually quantify the extent to which crime concentrates in these micro-places. In crime and
+      place literature we explore the concentration of crime at micro-places. "Perhaps the first
+      and most important empirical observation in the criminology of place is that crime
+      concentrates at very small units of geography"
+      (<xref ref="Weisburd_2015" text="custom">Weisburd, 2015</xref>, p. 135). A significant
+      proportion of crime concentrates around a small proportion of micro places.
+    </p>
+
+    <p>
+      One way to measure inequality in the distribution of a quantitative variable is to use the
+      <alert>Lorenz curve</alert>, and associated <alert>Gini coefficient</alert>. The Lorenz
+      curve is a probability plot (P–P plot) comparing the distribution of a variable against a
+      hypothetical uniform distribution of that variable. It can usually be represented by a
+      function <m>L(F)</m>, where <m>F</m>, the cumulative portion of the population, is
+      represented by the horizontal axis, and <m>L</m>, the cumulative portion of the variable of
+      interest (e.g., crime), is represented by the vertical axis. While Lorenz curves are used
+      typically to graph inequality of distribution of wealth, they can be applied in this case to
+      explore unequal distribution of crimes between micro-places. A perfectly equal distribution
+      would be depicted by the straight line <m>y = x</m>
+      (<xref ref="lorenz1905methods" text="custom">Lorenz, 1905</xref>;
+      <xref ref="zeileis2012package" text="custom">Zeileis et al., 2012</xref>). The
+      corresponding Gini coefficient represents the ratio of the area between the line of perfect
+      equality and the observed Lorenz curve to the area between the line of perfect equality and
+      the line of perfect inequality
+      (<xref ref="gastwirth1972estimation" text="custom">Gastwirth, 1972</xref>). The closer
+      the coefficient is to 1, the more unequal the distribution is
+      (<xref ref="zeileis2012package" text="custom">Zeileis et al., 2012</xref>).
+    </p>
+
+    <p>
+      In R we can implement these tests using the functions in the <c>ineq</c> package. To obtain
+      a Lorenz curve, we can use the <c>Lc()</c> function. <c>Lc()</c> computes the (empirical)
+      ordinary Lorenz curve of a vector <m>x</m> (in this case, our <c>crimes_per_m</c>
+      variable). The function also computes a generalised Lorenz curve
+      (<m>= \text{ordinary Lorenz curve} \times mean(x)</m>). The result can be interpreted like
+      this: <m>p \times 100</m>% account for <m>L(p) \times 100</m>% of <m>x</m>.
+    </p>
+
+    <p>
+      Let's illustrate this again with the segments of Telegraph Road.
+    </p>
+
+    <program language="r">
+      <input>
+tr_lorenz &lt;- Lc(tr_sections$summer_rate)
+      </input>
+    </program>
+
+    <p>
+      Our resulting <c>tr_lorenz</c> object has three elements. First, the <c>p</c> represents
+      the cumulative percent of crimes (per metre) for each line segment. Then, <c>L</c> contains
+      the values of the ordinary Lorenz curve, while the <c>L.general</c> element the values for
+      the generalised Lorenz curve. We can plot the Lorenz curve with the <c>plot()</c> function
+      from base R.
+    </p>
+
+    <program language="r">
+      <input>
+plot(tr_lorenz)
+      </input>
+    </program>
+
+    <figure>
+      <caption>Lorenz curve for crimes in Heswall</caption>
+      <image source="figure-ch08/ch8-21.png">
+        <description>A plot titled 'Lorenz curve', with vertical axis labeled 'L of p', ranging
+        from zero to one, and horizontal axis labeled 'p' also ranging from zero to one. A
+        straight line bisects the plot from the origin to the top right, where both values are
+        one. Another line runs along the horizontal axis from zero to about point eight five,
+        before climbing quickly to meet the line where both 'p' and 'L of p' are
+        one.</description>
+      </image>
+    </figure>
+
+    <p>
+      Upon seeing this, we can consider that many of the segments of the Telegraph Road contribute
+      very little to overall crimes, and it is instead the top few (less than the top 20%) which
+      contribute to all the shoplifting incidents. From a visual inspection, it appears that the
+      Telegraph Road very precisely fits (and exceeds) the Pareto Principle, whereby 20% of the
+      segments seem to account for 80% of the crimes (per metre length of the segment). We can
+      quantify this further using the Gini coefficient.
+    </p>
+
+    <program language="r">
+      <input>
+ineq(tr_sections$summer_rate, type="Gini")
+      </input>
+    </program>
+    <console>
+      <output>## [1] 0.9</output>
+    </console>
+
+    <p>
+      This score is quite high. The Gini Index is calculated from the Lorenz curve, by taking the
+      area between the line of equality and the Lorenz curve, and dividing this by the total area
+      under the line of equality. This number is bounded between 0 (perfect equality where the
+      Lorenz curve sits right on top of the line of equality) and 1 (perfect inequality, where the
+      Lorenz curve sits right on top of the x-axis and bends at right angle); so the closer we
+      get to 1, the higher the inequality in the distribution in our value of interest, in this
+      case crimes per metre. Clearly we see crime concentrate in certain segments of Telegraph
+      Road.
+    </p>
+
+  </section>
+
+  <section xml:id="sec-ch8-summary">
+    <title>Summary and further reading</title>
+
+    <p>
+      The focus in this chapter has been to introduce the issue of crime events along a network.
+      There has been increasing recognition in recent years that the spatial existence of many
+      phenomena is constrained by networks. We have discussed some of the issues associated with
+      the storage, handling, and visualisation of this kind of data. Chapter 1 of
+      <xref ref="Okabe_2012" text="custom">Okabe and Sugihara (2012)</xref> provides a fairly
+      accessible introduction to the relevance of point pattern data along a network, whereas
+      Chapter 3 offers a slightly more technical discussion of the computational issues associated
+      with the statistical analysis of points along a network. The first few sections of chapter
+      17 of <xref ref="Baddeley_2016" text="custom">Baddeley et al. (2015)</xref> provide
+      background and very useful detail on the way that <c>spatstat</c> handles and stores point
+      pattern data in a network.
+      <xref ref="Baddeley_2021" text="custom">Baddeley et al. (2021)</xref> offers an
+      excellent overview of the challenges of analysing this kind of data and the available
+      methods we have. This overview can also offers an excellent framework to understand the
+      issues of clustering and detection of local clusters along networks to which we will return
+      in the next two chapters.
+    </p>
+
+    <p>
+      But spatial networks analysis is a more general area, with various other applications that
+      we could not explore in detail here.
+      <xref ref="OSullivan_2014" text="custom">O'Sullivan (2014)</xref> provides an
+      introduction to spatial network analysis, basically a translation of social network metrics
+      and concepts applied to spatial networks. This kind of perspective is particularly helpful
+      within transport, routing, and similar applications. See, for example, the kind of
+      functionality and applications provided by <c>stplanr</c>. We are also witnessing
+      cross-fertilisation between social network analysis and spatial analysis. In epidemiology,
+      for example, we see how this is done for studying the transmission of disease through
+      personal and geographic networks (see, for example,
+      <xref ref="Emch_2010" text="custom">Emch et al., 2010</xref>). Whereas
+      <xref ref="Radil_2010" text="custom">Radil et al. (2010)</xref> and
+      <xref ref="Tita_2011" text="custom">Tita and Radil (2011)</xref> offer some
+      criminological examples (focused on the study of gangs) linking social network analysis and
+      spatial analysis. Along these lines, the package <c>spnet</c> facilitates the rendering of
+      social network data into a geographical space. Some of these applications can be relevant
+      for investigative crime analysis and other criminological uses. Finally, another way in
+      which social networks are being used within the context of environmental criminology is in
+      contributing to the alternative specifications of neighbourhoods that aim to move beyond the
+      traditional use of census geographies (see
+      <xref ref="Hipp_2012" text="custom">Hipp et al., 2012</xref> and
+      <xref ref="Hipp_2013" text="custom">Hipp and Boessen, 2013</xref>). Finally, it is also
+      worth exploring the literature on <alert>space syntax</alert> and crime, and the various
+      analyses that are looking at the structural characteristics of the street network (such as
+      betweenness) and how these characteristics influence crime
+      (<xref ref="Davies_2018" text="custom">Davies and Bowers, 2018</xref>;
+      <xref ref="Kim_2019" text="custom">Kim and Hipp, 2019</xref>).
+    </p>
+
+  </section>
+
+</chapter>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- The docinfo block is the analogue to the latex preamble -->
+<!-- This is where you can define macros and other book-wide settings. -->
+<docinfo xmlns:xi="http://www.w3.org/2001/XInclude">
+  <document-id>crime-mapping-spatial-data-analysis</document-id>
+  <blurb shelf="Statistics">
+    An introduction to Crime Mapping and Spatial Data Analysis using R.
+  </blurb>
+
+  <macros>
+    \newcommand{\N}{\mathbb N}
+    \newcommand{\Z}{\mathbb Z}
+    \newcommand{\Q}{\mathbb Q}
+    \newcommand{\R}{\mathbb R}
+  </macros>
+
+  <latex-image-preamble>
+    \usepackage{tikz, pgfplots}
+    \usetikzlibrary{positioning,matrix,arrows}
+  </latex-image-preamble>
+</docinfo>

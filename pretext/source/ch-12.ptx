@@ -1,0 +1,960 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<chapter xml:id="ch-12" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <title>Spatial Heterogeneity and Regression</title>
+
+  <introduction>
+    <p>
+      One of the challenges of spatial data is that we may encounter exceptions to stationary
+      processes. There may be, for example, parameter variability across the study area. When we
+      have homogeneity, everything is the same everywhere; in terms of our regression equation,
+      the parameters are constant. But as we illustrated via an interaction term in Chapter 11,
+      that may not be the case. We can encounter situations where a particular input has a
+      different effect in parts of our study area. In this chapter we explore this issue and a
+      number of solutions that have been proposed to deal with it. It goes without saying that
+      having extreme heterogeneity creates technical problems for estimation. If everything is
+      different everywhere, we may have to estimate more parameters than we have data for.
+    </p>
+
+    <p>
+      One way of dealing with this is by imposing some form of structure, for example partitioning
+      data for the United States to fit a separate model for Southern and Northern counties. Unlike
+      data partition, <alert>full spatial regimes</alert> also imply using different coefficients
+      for each subset of the data, but you fit everything in one go. This is essentially the same
+      as running as many models as subsets you have. As
+      <xref ref="Anselin_2007" text="custom">Anselin (2007)</xref> highlights, this corrects
+      for heterogeneity but does not explain it. We can then test whether this was necessary,
+      using a <em>Chow test</em> comparing the simpler model with the one where we allow
+      variability. Of course, we can also include spatial dependence in these models.
+    </p>
+
+    <p>
+      Another way of dealing with heterogeneity is by allowing continuous variation, rather than
+      discrete (as when we subset the data), of the parameters. A popular method for doing this
+      is <alert>geographically weighted regression (GWR)</alert>. This is a case of a local
+      regression where you try to estimate a different set of parameters for each location and
+      these parameters are obtained from a subset of observation using kernel regression. In
+      traditional local regression we select the subset in the attribute space (observations with
+      similar attributes); in GWR the local subset is defined in a geographical sense using a
+      kernel (remember how we used kernels for density estimation to define a set of
+      "neighbours"). We are estimating regression equations based on nearby locations as specified
+      by our kernel, and this produces a different coefficient for each location. As with kernel
+      density estimation, you can distinguish between fixed bandwidth and adaptive bandwidth.
+    </p>
+
+    <p>
+      For this chapter we will need to load the following packages:
+    </p>
+
+    <program language="r">
+      <input>
+library(tidyr)
+library(dplyr)
+# Packages for handling spatial data and for geospatial carpentry
+library(sf)
+library(sp)
+library(spdep)
+# Packages for regression and spatial regression
+library(spatialreg)
+# Packages for mapping and visualisation
+library(tmap)
+library(ggplot2)
+# Packages with spatial datasets
+library(geodaData)
+# For geographicaly weighted regression
+library(spgwr)
+      </input>
+    </program>
+
+  </introduction>
+
+  <section xml:id="sec-ch12-spatial-regimes">
+    <title>Spatial regimes</title>
+
+    <subsection xml:id="subsec-ch12-regimes-constrained">
+      <title>Fitting the constrained and the unconstrained models</title>
+
+      <p>
+        To illustrate this solution, we will go back to the "ncovr" data we explored last week and
+        use the same spatial weight matrix as in the previous chapter. If you have read the
+        <xref ref="Baller_etal_2001" text="custom">Baller et al. (2001)</xref> paper that we are
+        in a way replicating here, you could see they decided that they needed to run separate
+        models for the South and the North. Let's explore this here.
+      </p>
+
+      <program language="r">
+        <input>
+data("ncovr")
+# We coerce the sf object into a new sp object
+ncovr_sp &lt;- as(ncovr, "Spatial")
+# Then we create a list of neighbours using 10 nearest neighbours criteria
+xy &lt;- coordinates(ncovr_sp)
+nb_k10 &lt;- knn2nb(knearneigh(xy, k = 10))
+rwm &lt;- nb2mat(nb_k10, style='W')
+rwm &lt;- mat2listw(rwm, style='W')
+# remove redundant objects
+rm(list = c("ncovr_sp", "xy", "nb_k10"))
+        </input>
+      </program>
+
+      <p>
+        We can start by running a model for the whole country to use as a baseline model:
+      </p>
+
+      <program language="r">
+        <input>
+fit1_70 &lt;- lm(HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, data = ncovr)
+summary(fit1_70)
+        </input>
+      </program>
+<pre>
+## 
+## Call:
+## lm(formula = HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, data = ncovr)
+## 
+## Residuals:
+##    Min     1Q Median     3Q    Max 
+## -21.12  -3.14  -1.02   1.90  69.75 
+## 
+## Coefficients:
+##             Estimate Std. Error t value Pr(&gt;|t|)    
+## (Intercept)  11.1376     0.7602   14.65   &lt;2e-16 ***
+## RD70          4.1541     0.1147   36.23   &lt;2e-16 ***
+## PS70          1.1449     0.1165    9.82   &lt;2e-16 ***
+## MA70         -0.2080     0.0233   -8.94   &lt;2e-16 ***
+## DV70          1.4066     0.1064   13.22   &lt;2e-16 ***
+## UE70         -0.4268     0.0497   -8.59   &lt;2e-16 ***
+## ---
+## Signif. codes:  
+## 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+## 
+## Residual standard error: 6.03 on 3079 degrees of freedom
+## Multiple R-squared:  0.328,  Adjusted R-squared:  0.327 
+## F-statistic:  301 on 5 and 3079 DF,  p-value: &lt;2e-16
+</pre>
+      <p>
+        A simple visualisation of the residuals suggests the model may not be optimal for the
+        entire study region:
+      </p>
+
+      <program language="r">
+        <input>
+ncovr$res_fit1 &lt;- fit1_70$residuals
+ggplot(ncovr, aes(x = res_fit1, colour = as.factor(SOUTH))) + 
+  geom_density() + 
+  xlab("Residuals") + 
+  scale_colour_brewer(palette = "Set1", name = "Region (1 = South)") + 
+  theme_bw()
+        </input>
+      </program>
+
+      <figure xml:id="fig-ch12-regimes-residuals">
+        <caption>Distribution of residuals by study region (South versus North)</caption>
+        <image source="figure-ch12/fig-ch12-regimes-residuals.png">
+          <description>A plot of two data sets, in red and blue. The vertical axis is labeled
+          'density' and ranges from zero to point one seven, while the horizontal axis is labeled
+          'Residuals', ranging from negative twenty five to seventy five. A legend to the right
+          matches blue to South. Both plotted data sets peak slightly left of zero Residuals, but
+          the peaks look very different. Red is a sharp and tall peak, reaching nearly point one
+          seven, and dropping off quickly in both directions. Blue peaks at around point zero
+          seven, and drops off to zero more gradually, especially in the positive
+          residuals.</description>
+        </image>
+      </figure>
+
+      <p>
+        To be able to fit these spatial regimes, that will allow for separate coefficients for
+        counties in the North and those in the South, first we need to define a dummy for the
+        Northern counties, and we create a vector of 1.
+      </p>
+
+      <program language="r">
+        <input>
+ncovr$NORTH &lt;- recode(ncovr$SOUTH, `1` = 0, `0` = 1)
+ncovr$ONE &lt;- 1
+        </input>
+      </program>
+
+      <p>
+        Having created these new columns, we can fit a standard OLS model interacting the inputs
+        with our dummies and setting the intercept to 0, so that each regime is allowed its own
+        intercept:
+      </p>
+
+      <program language="r">
+        <input>
+fit2_70_sr &lt;- lm(HR70 ~ 0 + (ONE + RD70 + PS70 + MA70 + DV70 + UE70):(SOUTH + NORTH), 
+                 data = ncovr)
+summary(fit2_70_sr)
+        </input>
+      </program>
+<pre>
+## 
+## Call:
+## lm(formula = HR70 ~ 0 + (ONE + RD70 + PS70 + MA70 + DV70 + UE70):(SOUTH + 
+##     NORTH), data = ncovr)
+## 
+## Residuals:
+##    Min     1Q Median     3Q    Max 
+## -17.47  -2.79  -0.76   1.71  65.60 
+## 
+## Coefficients:
+##            Estimate Std. Error t value Pr(&gt;|t|)    
+## ONE:SOUTH   15.0305     1.0714   14.03  &lt;2e-16 ***
+## ONE:NORTH    6.6485     1.1308    5.88  4.6e-09 ***
+## RD70:SOUTH   3.2364     0.1884   17.18  &lt;2e-16 ***
+## RD70:NORTH   2.9523     0.2745   10.75  &lt;2e-16 ***
+## PS70:SOUTH   0.9953     0.2114    4.71  2.6e-06 ***
+## PS70:NORTH   0.8428     0.1402    6.01  2.0e-09 ***
+## MA70:SOUTH  -0.1656     0.0338   -4.90  1.0e-06 ***
+## MA70:NORTH  -0.1749     0.0325   -5.37  8.2e-08 ***
+## DV70:SOUTH   0.6271     0.1750    3.58  0.00034 ***
+## DV70:NORTH   1.4263     0.1313   10.86  &lt;2e-16 ***
+## UE70:SOUTH  -0.7916     0.0817   -9.69  &lt;2e-16 ***
+## UE70:NORTH  -0.0293     0.0631   -0.46  0.64265    
+## ---
+## Signif. codes:  
+## 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+## 
+## Residual standard error: 5.81 on 3073 degrees of freedom
+## Multiple R-squared:  0.645,  Adjusted R-squared:  0.644 
+## F-statistic:  465 on 12 and 3073 DF,  p-value: &lt;2e-16
+</pre>
+      <p>
+        We can see a higher intercept for the South, reflecting the higher level of homicide in
+        these counties. Aside from this, the two more notable differences are the insignificant
+        effect of unemployment in the North and the higher impact of the divorce rate in the North.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch12-regimes-chow">
+      <title>Running the Chow test</title>
+
+      <p>
+        The Chow test is often used in econometrics to determine whether the independent variables
+        have different impacts on different sub-groups of the population.
+        <xref ref="Anselin_2007" text="custom">Anselin (2007)</xref> provides an
+        implementation for this test that extracts the residuals and the degrees of freedom from
+        the constrained (the simpler OLS model) and the unconstrained models (the less parsimonious
+        spatial regime), and then computes the test based on the F distribution.
+      </p>
+
+      <program language="r">
+        <input>
+chow.test &lt;- function(rest, unrest) {
+  er &lt;- residuals(rest)
+  eu &lt;- residuals(unrest)
+  er2 &lt;- sum(er ^ 2)
+  eu2 &lt;- sum(eu ^ 2)
+  k &lt;- rest$rank
+  n2k &lt;- rest$df.residual - k
+  c &lt;- ((er2 - eu2) / k) / (eu2 / n2k)
+  pc &lt;- pf(c, k, n2k, lower.tail = FALSE)
+  list(c, pc, k, n2k)
+}
+        </input>
+      </program>
+
+      <p>
+        With the function in our environment we can then run the test, which will yield the test
+        statistic, the p value, and two degrees of freedom.
+      </p>
+
+      <program language="r">
+        <input>
+ chow.test(fit1_70,fit2_70_sr)
+        </input>
+      </program>
+<pre>
+## [[1]]
+## [1] 40.16
+## 
+## [[2]]
+## [1] 2.674e-47
+## 
+## [[3]]
+## [1] 6
+## 
+## [[4]]
+## [1] 3073
+</pre>
+
+      <p>
+        How we interpret this test? When the Chow test is significant, as here, this provides
+        evidence of spatial heterogeneity and in favour of fitting a spatial regime model, allowing
+        for non-constant coefficients across the discrete subsets of data that we have specified.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch12-regimes-dependence">
+      <title>Spatial dependence with spatial heterogeneity</title>
+
+      <p>
+        So far we have only adjusted for a form of spatial heterogeneity in our model, but we may
+        still have to deal with spatial dependence. Here what we covered in Chapter 11, still
+        applies. We can run the various specification tests and then select a model that adjusts
+        for spatial dependence.
+      </p>
+
+      <program language="r">
+        <input>
+summary(lm.LMtests(fit2_70_sr, rwm, test = c("LMerr","LMlag","RLMerr","RLMlag")))
+        </input>
+      </program>
+<pre>
+##  Lagrange multiplier diagnostics for spatial
+##  dependence
+## data:  
+## model: lm(formula = HR70 ~ 0 + (ONE + RD70 +
+## PS70 + MA70 + DV70 + UE70):(SOUTH + NORTH), data
+## = ncovr)
+## weights: rwm
+##  
+##        statistic parameter p.value    
+## LMerr     227.20         1 &lt;2e-16 ***
+## LMlag     252.00         1 &lt;2e-16 ***
+## RLMerr      5.25         1   0.022 *  
+## RLMlag     30.05         1 4.2e-08 ***
+## ---
+## Signif. codes:  
+## 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+</pre>
+      <p>
+        The Lagrange multiplier tests, according to Anselin's suggestions for how to interpret
+        these, point to a spatial lag model (since RLMlag is several orders more significant than
+        the error alternative).
+      </p>
+
+      <p>
+        We could then fit this model using <c>sp</c>:
+      </p>
+
+      <program language="r">
+        <input>
+fit3_70_sr_sar &lt;- lagsarlm(HR70 ~ 0 +
+                             (ONE +
+                                RD70 +
+                                PS70 +
+                                MA70 +
+                                DV70 +
+                                UE70):(SOUTH + NORTH),
+                           data = ncovr,
+                           rwm)
+summary(fit3_70_sr_sar)
+        </input>
+      </program>
+<pre>
+## 
+## Call:
+## lagsarlm(formula = HR70 ~ 0 + (ONE + RD70 + PS70 + MA70 + DV70 + 
+##     UE70):(SOUTH + NORTH), data = ncovr, listw = rwm)
+## 
+## Residuals:
+##       Min        1Q    Median        3Q       Max 
+## -17.15273  -2.66726  -0.67209   1.49219  65.86918 
+## 
+## Type: lag 
+## Coefficients: (asymptotic standard errors) 
+##             Estimate Std. Error z value  Pr(>|z|)
+## ONE:SOUTH   8.391260   1.103507  7.6042 2.864e-14
+## ONE:NORTH   4.903963   1.091437  4.4931 7.019e-06
+## RD70:SOUTH  2.355243   0.191445 12.3025 &lt; 2.2e-16
+## RD70:NORTH  2.669956   0.266521 10.0178 &lt; 2.2e-16
+## PS70:SOUTH  0.653640   0.203791  3.2074 0.0013394
+## PS70:NORTH  0.778913   0.135054  5.7674 8.050e-09
+## MA70:SOUTH -0.100568   0.032699 -3.0756 0.0021009
+## MA70:NORTH -0.138235   0.031328 -4.4126 1.022e-05
+## DV70:SOUTH  0.636867   0.168184  3.7867 0.0001527
+## DV70:NORTH  1.157985   0.128559  9.0074 &lt; 2.2e-16
+## UE70:SOUTH -0.522353   0.079210 -6.5945 4.267e-11
+## UE70:NORTH -0.039129   0.060706 -0.6446 0.5192148
+## 
+## Rho: 0.3957, LR test value: 181.8, p-value: &lt; 2.22e-16
+## Asymptotic standard error: 0.02846
+##     z-value: 13.9, p-value: &lt; 2.22e-16
+## Wald statistic: 193.3, p-value: &lt; 2.22e-16
+## 
+## Log likelihood: -9710 for lag model
+## ML residual variance (sigma squared): 31.21, (sigma: 5.587)
+## Number of observations: 3085 
+## Number of parameters estimated: 14 
+## AIC: 19448, (AIC for lm: 19628)
+## LM test for residual autocorrelation
+## test value: 0.7147, p-value: 0.39789
+</pre>
+      <p>
+        We see that the AIC is better than for the non-spatial model and that there is no more
+        residual autocorrelation. We could explore other specifications (i.e., spatial Durbin
+        model) and the same caveats about interpreting coefficients in a spatial lag model we
+        raised in Chapter 11 would apply here. If the Lagrange multiplier tests had suggested a
+        spatial error model, we could also have fitted the model in the way we have also already
+        covered simply adjusting the regression formula as in this section.
+      </p>
+
+      <p>
+        We can now also run a Chow test; only in this case, we need to adjust the previous one to
+        account for spatial dependence.
+        <xref ref="Anselin_2007" text="custom">Anselin (2007)</xref> also provides for an
+        implementation of this test in R with the following ad-hoc function:
+      </p>
+
+      <program language="r">
+        <input>
+spatialchow.test &lt;- function(rest, unrest) {
+  lrest &lt;- rest$LL
+  lunrest &lt;- unrest$LL
+  k &lt;- rest$parameters - 2
+  spchow &lt;- -2.0 * (lrest - lunrest)
+  pchow &lt;- pchisq(spchow, k, lower.tail = FALSE)
+  list(spchow, pchow, k)
+}
+        </input>
+      </program>
+
+      <p>
+        This function will test a spatial lag model for the country as a whole with the spatial
+        lag model with our data partitions. So first we need to estimate the appropriate lag model
+        to be our constrained model:
+      </p>
+
+      <program language="r">
+        <input>
+fit4_70_sar &lt;-
+  lagsarlm(HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, 
+           data = ncovr,
+           rwm)
+        </input>
+      </program>
+
+      <p>
+        Which we can then use in the newly created function:
+      </p>
+
+      <program language="r">
+        <input>
+spatialchow.test(fit4_70_sar, fit3_70_sr_sar)
+        </input>
+      </program>
+<pre>
+## [[1]]
+##       [,1]
+## [1,] 58.59
+## 
+## [[2]]
+##           [,1]
+## [1,] 8.712e-11
+## 
+## [[3]]
+## [1] 6
+</pre>
+      <p>
+        The test is again highly significant providing evidence for the spatial lag model with the
+        spatial regimes.
+      </p>
+
+    </subsection>
+
+  </section>
+
+  <section xml:id="sec-ch12-gwr">
+    <title>Geographically Weighted Regression</title>
+
+    <p>
+      The basic idea behind Geographically Weighted Regression (GWR) is to explore how the
+      relationship between a dependent variable (<m>Y</m>) and one or more independent variables
+      (<m>X</m>s) might vary geographically. Instead of assuming that a single model can be
+      fitted to the entire study region, it looks for geographical differences in the
+      relationship. This is achieved by fitting a regression equation to every feature in the
+      dataset. We construct these separate equations by incorporating the dependent and
+      explanatory variables of the features falling within the neighbourhood of each target
+      feature.
+    </p>
+
+    <p>
+      GWR can be used for a variety of applications, including the following:
+    </p>
+
+    <ul>
+      <li><p>Is the relationship between homicide rate and resource deprivation consistent across
+      the study area?</p></li>
+      <li><p>What are the key variables that explain high homicide rates?</p></li>
+      <li><p>Where are the counties in which we see high homicide rates? What characteristics
+      seem to be associated with these? Where is each characteristic most important?</p></li>
+      <li><p>Are the factors influencing higher homicide rates consistent across the study
+      area?</p></li>
+    </ul>
+
+    <p>
+      GWR provides three types of regression models: Continuous, Binary, and Count. These types
+      of regression are known in statistical literature as Gaussian, Logistic, and Poisson,
+      respectively. The Model Type for your analysis should be chosen based on the level of
+      measurement of the Dependent Variable <m>Y</m>.
+    </p>
+
+    <p>
+      So to illustrate, let us first build our linear model once again, regressing homicide rate
+      in the 1970s for each county against resource deprivation (RD70), population structure
+      (PS70), median age (MA70), divorce rate (DV70), and unemployment rate (UE70).
+    </p>
+
+    <program language="r">
+      <input>
+# make linear model
+model &lt;- lm(HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, data = ncovr)
+summary(model)
+      </input>
+    </program>
+<pre>
+## 
+## Call:
+## lm(formula = HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, data = ncovr)
+## 
+## Residuals:
+##    Min     1Q Median     3Q    Max 
+## -21.12  -3.14  -1.02   1.90  69.75 
+## 
+## Coefficients:
+##             Estimate Std. Error t value Pr(&gt;|t|)    
+## (Intercept)  11.1376     0.7602   14.65   &lt;2e-16 ***
+## RD70          4.1541     0.1147   36.23   &lt;2e-16 ***
+## PS70          1.1449     0.1165    9.82   &lt;2e-16 ***
+## MA70         -0.2080     0.0233   -8.94   &lt;2e-16 ***
+## DV70          1.4066     0.1064   13.22   &lt;2e-16 ***
+## UE70         -0.4268     0.0497   -8.59   &lt;2e-16 ***
+## ---
+## Signif. codes:  
+## 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+## 
+## Residual standard error: 6.03 on 3079 degrees of freedom
+## Multiple R-squared:  0.328,  Adjusted R-squared:  0.327 
+## F-statistic:  301 on 5 and 3079 DF,  p-value: &lt;2e-16
+</pre>
+    <p>
+      And now, to get an idea of how our model might perform differently in different areas, we
+      can map the residuals across each county:
+    </p>
+
+    <program language="r">
+      <input>
+# map residuals
+ncovr$resids &lt;- residuals(model)
+qtm(ncovr, fill = "resids")
+      </input>
+    </program>
+
+    <figure xml:id="fig-ch12-gwr-residuals">
+      <caption>Map of model residuals</caption>
+      <image source="figure-ch12/fig-ch12-gwr-residuals.png">
+        <description>A map of counties in the United States, shaded in reds and blues. A legend
+        at the bottom left, labeled 'resids' matches reds with negative values, and blues with
+        positive values. Most of the counties are coloured in light colours. The midwest appears
+        more red than blue, while the east coast appears more blue than red.</description>
+      </image>
+    </figure>
+
+    <p>
+      If we see that there is a geographic pattern in the residuals, it is possible that an
+      unobserved variable may be influencing the dependent variable, and there might be some sort
+      of spatial variation in our model's performance. This is what GWR allows us to explore,
+      whether the relationship between our variables is stable over space.
+    </p>
+
+    <subsection xml:id="subsec-ch12-gwr-bandwidth">
+      <title>Calculate kernel bandwidth</title>
+
+      <p>
+        The big assumption on which the GWR model is based is the kernel bandwitdh. As mentioned
+        earlier, in order to calculate local coefficients for our study regions, GWR takes into
+        account the data points within our specified bandwith, weighting them appropriately. The
+        bandwidth we choose will determine our results. If we choose something too large, we might
+        mask variation and get results similar to the global results. If we choose something too
+        small, we might get spikes, and lots of small scale variation, but also possibly large
+        standard errors and unreliable estimates. Therefore, the process of choosing an
+        appropriate bandwidth is paramount to GWR.
+      </p>
+
+      <p>
+        It is possible that we choose bandwidth manually, based on some prior knowledge, or a
+        theoretically based argument. However, if we do not have such ideas to start, we can use
+        data-driven processes to inform our selection. The most frequently used approach is to use
+        cross-validation. Other approaches include Akaike Information Criteria, and maximum
+        likelihood.
+      </p>
+
+      <p>
+        Here we use <c>gwr.sel()</c> which uses a cross-validation method for selecting an
+        optimal method for GWR. The function finds a bandwidth for a given geographically weighted
+        regression by optimizing a selected function. For cross-validation, this scores the root
+        mean square prediction error for the geographically weighted regressions, choosing the
+        bandwidth minimizing this quantity.
+      </p>
+
+      <p>
+        With the <c>adapt</c> parameter you can choose whether you want the bandwidth to adapt
+        (i.e., find the proportion between 0 and 1 of observations to include in weighting scheme
+        (k-nearest neighbours)), or whether you want to find a global bandwidth. A global
+        bandwidth might make sense where the areas of interest are of equal size, and equally
+        spaced; however, if we have variation, for example like in the case of the counties of
+        the United States, it makes sense to adjust the bandwidth for each observation. Here we
+        set to adapt.
+      </p>
+
+      <p>
+        Another important consideration is the function for the geographical weighting. We
+        mentioned this above. In the <c>gwr.sel()</c> function you can set this with the
+        <c>gweight=</c> parameter. By default, this is set to a Gaussian function. We will keep
+        it that way here.
+      </p>
+
+      <p>
+        With an sf object (which our data are in), one of the parameters required is a coordinate
+        point for each one of our observations. In this case, what we can do is grab the centroid
+        of each one of our polygons. To do this, we can use the <c>st_coordinates()</c> function:
+      </p>
+
+      <program language="r">
+        <input>
+ncovr &lt;- ncovr %>% 
+  mutate(cent_coords = st_coordinates(st_centroid(.)))
+        </input>
+      </program>
+
+      <p>
+        Now that we have our centroids, we can calculate our optimal bandwith, and save this into
+        an object called <c>gwr_bandwidth</c>.
+      </p>
+
+      <program language="r">
+        <input>
+gwr_bandwidth &lt;- gwr.sel(HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, 
+                         data = ncovr, 
+                         coords = ncovr$cent_coords, 
+                         adapt = T)
+        </input>
+      </program>
+<pre>
+## Adaptive q: 0.382 CV score: 109039 
+## Adaptive q: 0.618 CV score: 110549 
+## Adaptive q: 0.2361 CV score: 107560 
+## Adaptive q: 0.1459 CV score: 105925 
+## Adaptive q: 0.09017 CV score: 104176 
+## Adaptive q: 0.05573 CV score: 102283 
+## Adaptive q: 0.03444 CV score: 100199 
+## Adaptive q: 0.02129 CV score: 98707 
+## Adaptive q: 0.01316 CV score: 98388 
+## Adaptive q: 0.01161 CV score: 98447 
+## Adaptive q: 0.01475 CV score: 98373 
+## Adaptive q: 0.0145 CV score: 98390 
+## Adaptive q: 0.01725 CV score: 98566 
+## Adaptive q: 0.01571 CV score: 98411 
+## Adaptive q: 0.01512 CV score: 98356 
+## Adaptive q: 0.01534 CV score: 98364 
+## Adaptive q: 0.01508 CV score: 98358 
+## Adaptive q: 0.01517 CV score: 98354 
+## Adaptive q: 0.01524 CV score: 98351 
+## Adaptive q: 0.01528 CV score: 98356 
+## Adaptive q: 0.01524 CV score: 98351
+</pre>
+
+      <p>
+        So we now have our bandwidth. It is:
+      </p>
+
+      <program language="r">
+        <input>
+gwr_bandwidth
+        </input>
+      </program>
+<pre>
+## [1] 0.01524
+</pre>
+      <p>
+        As our data are in WGS84, this value is in degrees.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch12-gwr-model">
+      <title>Building the geographically weighted model</title>
+
+      <p>
+        Now we can build our model. The <c>gwr()</c> function implements the basic geographically
+        weighted regression approach to exploring spatial non-stationarity for given bandwidth and
+        chosen weighting scheme. We specify the formula and our data source, as with the linear
+        and spatial regressions, and the coordinates of the centroids, as we did in the bandwidth
+        calculation above; but now we also specify our bandwith, which we created earlier, but we
+        do this with the <c>adapt=</c> parameter. This is because, by default, the function takes
+        a global bandwidth with the <c>bandwidth=</c> parameter, and we have created an adaptive
+        bandwidth, so we shall use this <c>adapt=</c> parameter to include our <c>GWRbandwidth</c>
+        object. We also set the <c>hatmatrix =</c> parameter to <c>TRUE</c>, to return the
+        hatmatrix as a component of the result, and the <c>se.fit=</c> parameter to <c>TRUE</c>
+        to return local coefficient standard errors - as we set hatmatrix to <c>TRUE</c>, two
+        effective degrees of freedom sigmas will be used to generate alternative coefficient
+        standard errors.
+      </p>
+
+      <program language="r">
+        <input>
+gwr_model = gwr(
+  HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70,
+  data = ncovr,
+  coords = ncovr$cent_coords,
+  adapt = gwr_bandwidth,
+  hatmatrix = TRUE,
+  se.fit = TRUE
+)
+
+gwr_model
+        </input>
+      </program>
+<pre>
+## Call:
+## gwr(formula = HR70 ~ RD70 + PS70 + MA70 + DV70 + UE70, data = ncovr, 
+##     coords = ncovr$cent_coords, adapt = gwr_bandwidth, hatmatrix = TRUE, 
+##     se.fit = TRUE)
+## Kernel function: gwr.Gauss 
+## Adaptive quantile: 0.01524 (about 47 of 3085 data points)
+## Summary of GWR coefficient estimates at data points:
+##                 Min. 1st Qu.  Median 3rd Qu.    Max.
+## X.Intercept. -4.2897  4.4361  7.4395 12.3212 30.1335
+## RD70         -0.3625  2.0168  2.8788  3.8206  6.6405
+## PS70         -4.0630  0.2914  1.0987  1.9019  3.4998
+## MA70         -0.6831 -0.2072 -0.1028 -0.0186  0.2971
+## DV70         -0.7513  0.5368  0.9652  1.4351  3.1027
+## UE70         -1.4895 -0.4286 -0.1787 -0.0220  1.8486
+##              Global
+## X.Intercept.  11.14
+## RD70           4.15
+## PS70           1.14
+## MA70          -0.21
+## DV70           1.41
+## UE70          -0.43
+## Number of data points: 3085 
+## Effective number of parameters (residual: 2traceS - traceS'S): 244 
+## Effective degrees of freedom (residual: 2traceS - traceS'S): 2841 
+## Sigma (residual: 2traceS - traceS'S): 5.405 
+## Effective number of parameters (model: traceS): 171.2 
+## Effective degrees of freedom (model: traceS): 2914 
+## Sigma (model: traceS): 5.337 
+## Sigma (ML): 5.186 
+## AICc (GWR p. 61, eq 2.33; p. 96, eq. 4.21): 19276 
+## AIC (GWR p. 96, eq. 4.22): 19082 
+## Residual sum of squares: 82986 
+## Quasi-global R2: 0.5022
+</pre>
+      <p>
+        This output tells us the 5-number summary for the coefficients (<m>Y</m>) for each
+        predictor variable <m>X</m>. We can see for all predictor variables, some counties have
+        negative values, while other counties have positive values. Evidently there is some
+        variation locally in the relationships between these independent variables and our
+        dependent variable.
+      </p>
+
+      <p>
+        For this to be informative, however, we should map this variation - this is where we can
+        gain insight into how the relationships may change over our study area. In our
+        <c>gwr_model</c> object, we have a <em>S</em>patial <em>D</em>ata <em>F</em>rame. This
+        is a <em>SpatialPointsDataFrame</em> or <em>SpatialPolygonsDataFrame</em> object which
+        contains fit.points, weights, GWR coefficient estimates, R square, and coefficient
+        standard errors in its "data" slot. Let's extract this into another object called
+        <c>gwr_results</c>:
+      </p>
+
+      <program language="r">
+        <input>
+gwr_results &lt;- as.data.frame(gwr_model$SDF)
+        </input>
+      </program>
+
+      <p>
+        To map this, we can join these results back to our original data frame.
+      </p>
+
+      <program language="r">
+        <input>
+gwr_results &lt;- cbind(ncovr, gwr_results)
+        </input>
+      </program>
+
+      <p>
+        Now we can begin to map our results. First, let's see how well the model performs across
+        the different counties of the United States. To do this, we can map the <c>localR2</c>
+        value which contains the local <m>R^2</m> value for each observation.
+      </p>
+
+      <program language="r">
+        <input>
+qtm(gwr_results, fill =  "localR2" )
+        </input>
+      </program>
+<pre>
+## old-style crs object detected; please recreate object with a recent sf::st_crs()
+## old-style crs object detected; please recreate object with a recent sf::st_crs()
+## old-style crs object detected; please recreate object with a recent sf::st_crs()
+## old-style crs object detected; please recreate object with a recent sf::st_crs()
+## old-style crs object detected; please recreate object with a recent sf::st_crs()
+</pre>
+      <figure xml:id="fig-ch12-gwr-localr2">
+        <caption>Map of local R square value for each county</caption>
+        <image source="figure-ch12/fig-ch12-gwr-localr2.png">
+          <description>Counties of the United States are now shaded in shades of blue. A legend
+          in the bottom left, labeled 'local R 2', matches increasing values to darker blues. The
+          colour transitions are smooth, with a dark blue emanating from New York, with counties
+          from Delaware to Maine being darker blues. Areas in Illinois and South Dakota also appear
+          in darker blue. The south and northwest are very light shades.</description>
+        </image>
+      </figure>
+
+      <p>
+        We can see some really neat spatial patterns in how well our model performs in various
+        regions of the United States. Our model performs really well in the North East for
+        example, but not so well in the South.
+      </p>
+
+      <p>
+        We can also map the coefficients for specific variables. Let's say we're interested in
+        how the relationship between resource deprivation (RD70) and homicide rate.
+      </p>
+
+      <blockquote>
+        <p>
+          <alert>NOTE:</alert> In our <c>gwr_results</c> data frame we have a variable called
+          <c>RD70</c>; this contains the observed resource deprivation value for the county. We
+          then have <c>RD70.1</c> which is the coefficient value for each county. In the results
+          contained in the SDF element of our model (<c>gwr_model$SDF</c>) it was named
+          <c>RD70</c> but when we joined the two objects, the <c>.1</c> was appended to allow us
+          to differentiate between the two.
+        </p>
+      </blockquote>
+
+      <program language="r">
+        <input>
+qtm(gwr_results, fill =  "RD70.1" )
+        </input>
+      </program>
+
+      <figure xml:id="fig-ch12-gwr-rd70">
+        <caption>Map of coefficient for resource deprivation value for each county</caption>
+        <image source="figure-ch12/fig-ch12-gwr-rd70.png">
+          <description>The counties of the United States are shaded in shades of blue and orange.
+          A legend in the bottom left, labeled 'RD70.1', matches negative two to zero to orange,
+          and zero to eight in increasingly darker blues. The northwest, and south of lake Michigan
+          appear dark blue, with a lighter blue covering most of the rest of the counties. The
+          northwest, far southeast, and a strip down the centre of the country are very light
+          blues. Orange is only apparent in a cluster of counties in the centre of
+          Texas.</description>
+        </image>
+      </figure>
+
+      <p>
+        We can see in this map again some regional patterns in the coefficient of resource
+        deprivation. The relationship is stronger in the counties in the Northeast, while in other
+        areas it is weak or even 0. And in some counties in Texas, we can see that the direction
+        of the relationship flips. In these areas the coefficients are negative. This means that
+        resource deprivation is associated with <em>lower</em> homicide rates in these counties.
+      </p>
+
+      <p>
+        This may be interesting and may raise questions; however, it is important to consider not
+        only the coefficients, but also the <em>standard errors</em> associated with them, so we
+        can get some ideas behind the reliability of these estimates. So let us have a look by
+        mapping the standard errors for these coefficients, which are contained in the
+        <c>RD70_se</c> variable.
+      </p>
+
+      <program language="r">
+        <input>
+qtm(gwr_results, fill =  "RD70_se" )
+        </input>
+      </program>
+
+      <figure xml:id="fig-ch12-gwr-rd70-se">
+        <caption>Map of standard errors for resource deprivation value for each county</caption>
+        <image source="figure-ch12/fig-ch12-gwr-rd70-se.png">
+          <description>This shaded map of the counties of the United States has a legend titled
+          'RD70 se', matching values increasing from zero to darker shades of blue. Counties
+          around the west coast, upper midwest, and New Hampshire are dark blues, while some of
+          the south on both sides of Texas are very light blue.</description>
+        </image>
+      </figure>
+
+      <p>
+        Higher standard errors mean that our estimates may be less reliable. So it is important
+        to keep in mind both maps: the one with the coefficients, and the one showing the standard
+        errors, when drawing conclusions from our GWR results.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch12-gwr-using">
+      <title>Using GWR</title>
+
+      <p>
+        Overall, GWR is a good <alert>exploratory</alert> tool which can help illustrate how a
+        particular model might apply differently in different regions of your study area, or how
+        relationships between variables may vary spatially. This technique can be extended, for
+        example to count models, or logit models, but (following the lead of Luc Anselin) we stop
+        here, and pause to highlight some issues. Specifically, our <em>results are very sensitive
+        to our choice of bandwidth</em>. The results we achieve with this approach might not show
+        up when we use other bandwiths. Additionally, GWR does not really <em>explain</em>
+        anything. What we do is demonstrate that the relationship between our variables is not
+        stable over space. But we cannot with this technique explain <em>why</em> it is not
+        stable over space.
+      </p>
+
+      <p>
+        Nevertheless, it is a great technique to identify spatial variation, which, unlike spatial
+        regimes, does not rely on our a priory segmentation of our study region, but instead it
+        allows for the variation to emerge from the data themselves.
+      </p>
+
+    </subsection>
+
+  </section>
+
+  <section xml:id="sec-ch12-summary">
+    <title>Summary and further reading</title>
+
+    <p>
+      This chapter has tackled some of the issues of spatial heterogeneity in regression results.
+      When applying regression in a spatial context, it is possible to encounter situations where
+      we might observe a different effect on our variables in different parts of our study area.
+      Specifically, we covered two approaches to exploring this. The first one was to impose some
+      a priori segmentation to our data, based on contextual knowledge and possible patterns in
+      our regression results. We illustrated this by imposing spatial regimes in our NCOVR data
+      set, splitting into separate North and South USA, as was done by the original authors of
+      the paper by <xref ref="Baller_etal_2001" text="custom">Baller et al. (2001)</xref>. The
+      second approach was to explore how the coefficients may vary across our study space by
+      applying Geographically Weighted Regression to our study area. We provided a high-level
+      overview of this process and recommended it as an illustrative, exploratory technique to
+      raise questions about possible spatial heterogeneity in the processes we are trying to
+      model in our study region.
+    </p>
+
+    <p>
+      To delve into greater detail on the topic of spatial heterogeneity, chapters 8 and 9 in
+      <xref ref="Anselin_2007" text="custom">Anselin (2007)</xref> discuss specification of
+      spatial heterogeneity. This is particularly helpful as an introduction to the issues and
+      solutions we have discussed in this chapter. For more details and applications of
+      Geographically Weighted Regression, we recommend
+      <xref ref="Fotheringham_2003" text="custom">Fotheringham et al. (2003)</xref>. For
+      applications and an illustration of the importance to consider spatial variation within the
+      context of criminology and crime analysis, read
+      <xref ref="Cahill_2007" text="custom">Cahill and Mulligan (2007)</xref> and
+      <xref ref="Andresen_2020b" text="custom">Andresen and Ha (2020)</xref> as good
+      examples.
+    </p>
+
+    <p>
+      And for those wishing to explore additional ways to model spatial interactions, such as CAR
+      and Bayesian models, we suggest to read
+      <xref ref="Banerjee_2014" text="custom">Banerjee et al. (2014)</xref> as well as
+      chapters 9 and 10 in
+      <xref ref="Bivand_2013" text="custom">Bivand et al. (2013)</xref>.
+    </p>
+
+  </section>
+
+</chapter>

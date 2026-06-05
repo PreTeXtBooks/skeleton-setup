@@ -1,0 +1,1448 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<chapter xml:id="ch-07" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <title>Spatial Point Patterns of Crime Events</title>
+
+  <section xml:id="sec-ch07-isarithmic">
+    <title>Mapping crime intensity with isarithmic maps</title>
+
+    <p>
+      A key piece of information we explore in environmental criminology is the "exact"
+      location of crimes, typically in the form of street address in which a crime is
+      recorded as having occurred. A key goal of the analysis of this type of mapped point
+      data is to detect patterns, in particular to detect areas where crime locations appear
+      as clustered and reflecting an increased likelihood of occurrence.
+    </p>
+
+    <p>
+      In Chapter 1, we generated some maps with point locations representing crimes in
+      Greater Manchester (UK), and we saw how the large volume of events made it difficult
+      to discern any spatial pattern. In previous chapters we saw how we could deal with
+      this via aggregation of the point data to enumeration areas such as census tracts or
+      by virtue of binning. In this chapter we will introduce techniques that are used as an
+      alternative visualisation for point patterns and that are based on the mathematics of
+      density estimation. They are used to produce <term>isarithmic maps</term>; these are
+      the kind of maps you often see in the weather reports displaying temperature. What we
+      are doing is creating an interpolated surface from discrete data points. Or in simpler
+      terms we are "effectively inventing data values for the areas on the map for which you
+      don't have data or sample points" <xref ref="Field_2015"/>.
+    </p>
+
+    <p>
+      Before we get to the detail of how we produce these maps, we will briefly and very
+      generally introduce the field of spatial point pattern analysis. The analysis of
+      discrete locations are a sub-field of spatial statistics. In this chapter we will
+      introduce an R package, called <c>spatstat</c>, that was developed for spatial point
+      pattern analysis and modelling. It was written by Adrian Baddeley and Rolf Turner.
+      There is a <url href="http://spatstat.org">webpage</url> and a book
+      <xref ref="Baddeley_2016"/> dedicated to this package. In our book we are only going
+      to provide you with an introductory practical entry into this field of techniques. If
+      this package is not installed in your machine, make sure you install it before we
+      carry on. In this chapter we will also be using the package <c>crimedata</c>
+      developed by our colleague Matt Ashby, which we introduced in chapter 6
+      <xref ref="Ashby_2018"/>.
+    </p>
+
+    <program language="r" label="load-libraries-ch07">
+      <input>
+# Packages for reading data and data carpentry
+library(readr)
+library(dplyr)
+
+# Packages for handling spatial data and for geospatial carpentry
+library(sf)
+library(maptools)
+library(raster) # used for data represented in a raster model
+
+# Specific packages for spatial point pattern analysis
+library(spatstat)
+
+# Libraries for spatial visualisation
+library(tmap)
+library(ggplot2)
+library(leaflet)
+
+# Libraries with relevant data for the chapter
+library(crimedata)
+      </input>
+    </program>
+
+  </section>
+
+  <section xml:id="sec-ch07-nyc-burglaries">
+    <title>Burglaries in NYC</title>
+
+    <p>
+      Like in Chapter 6, our data come from the <term>Crime Open Database (CODE)</term>, a
+      service that makes it convenient to use crime data from multiple US cities in research
+      on crime. All the data in CODE are available to use for free as long as you
+      acknowledge the source of the data. The package <c>crimedata</c> was developed by Dr.
+      Ashby to make it easier to read into R the data from this service. In the last chapter
+      we provided the data in a csv format, but here we will actually make use of the
+      package to show you how you might acquire such data yourself.
+    </p>
+
+    <p>
+      The key function in <c>crimedata</c> is <c>get_crime_data()</c>. We will be using the
+      crime data from New York City police and for 2010, and we want the data to be in
+      <c>sf</c> format. We will also filter the data to only include residential burglaries
+      in Brooklyn.
+    </p>
+
+    <program language="r" label="load-nyc-data-ch07">
+      <input>
+# Large dataset, so it will take a while
+nyc_burg &lt;- get_crime_data(
+  cities = "New York", #specifies the city for which you want the data
+  years = 2010,        #reads the appropriate year of data
+  type = "extended",   #select extended (a fuller set of fields)
+  output = "sf") %&gt;%        #return a sf object (vs tibble)
+filter(offense_type == "residential burglary/breaking &amp; entering" &amp;
+           nyc_boro_nm == "MANHATTAN")
+      </input>
+    </program>
+
+    <p>
+      Additionally, we will need a geometry of borough boundaries. We have downloaded this
+      from the NYC open data portal, and it is supplied with the data included with this
+      book. The file is <c>manhattan.geojson</c>.
+    </p>
+
+    <program language="r" label="read-manhattan-ch07">
+      <input>
+manhattan &lt;- st_read("data/manhattan.geojson") %&gt;%
+  filter(BoroName == "Manhattan") # select only Manhattan
+      </input>
+    </program>
+
+    <p>
+      Now that we have all our data, let's plot to see how they look.
+    </p>
+
+    <program language="r" label="plot-manhattan-ch07">
+      <input>
+ggplot() +
+  geom_sf(data = manhattan) + # boundary data
+  geom_sf(data = nyc_burg, size = 0.5) +  # crime locations as points
+  theme_void()
+      </input>
+    </program>
+
+    <figure xml:id="fig-manhattan-crime-points">
+      <caption>Plot Manhattan borough and crime locations as points</caption>
+      <image source="figure-ch07/manhattan-crime-points.png">
+        <description>The landmasses of Manhattan, outlined in black and shaded grey. Black
+        points are scattered throughout the island, with a gap in the centre of the island
+        where Central Park would be.</description>
+      </image>
+    </figure>
+
+    <p>
+      In the point pattern analysis literature each point is often referred to as an
+      <term>event</term> and these events can have <term>marks</term>, attributes or
+      characteristics that are also encoded in the data. In our spatial object, one of these
+      <em>marks</em> is the type of crime (although in this case it is of little interest
+      since we have filtered on it). Others in this object include the date and time,
+      location category, victim sex and race, etc.
+    </p>
+
+  </section>
+
+  <section xml:id="sec-ch07-spatstat">
+    <title>Using the <c>spatstat</c> package</title>
+
+    <p>
+      The R package <c>spatstat</c> was created for spatial statistics with a strong focus
+      on analysing spatial point patterns. It is the result of 15 years of development by
+      leading researchers in spatial statistics. We highly recommend the book "Spatial Point
+      Patterns: Methodology and Applications with R" to give a comprehensive overview of
+      this package <xref ref="Baddeley_2016"/>.
+    </p>
+
+    <p>
+      When working within the <c>spatstat</c> environment, we will be working with planar
+      point pattern objects. This means that the first thing we need to do is to transform
+      our <c>sf</c> object into a <c>ppp</c> (planar point pattern) object. This is how
+      <c>spatstat</c> likes to store its point patterns. The components of a <c>ppp</c>
+      object include the coordinates of the points and the observation window (defining the
+      study area).
+    </p>
+
+    <p>
+      It is important to realise that a point pattern is defined as a series of events in a
+      given area, or window, of observation. Therefore, we need to precisely define this
+      window. In <c>spatstat</c> the function <c>owin()</c> is used to set the observation
+      window. However, the standard function takes the coordinates of a rectangle or of a
+      polygon from a matrix, and therefore it may be a bit tricky to use with a <c>sf</c>
+      object. Luckily, the package <c>maptools</c> provides a way to transform a
+      <c>SpatialPolygons</c> into an object of class <c>owin</c>, using the function
+      <c>as.owin()</c>. Here are the steps.
+    </p>
+
+    <p>
+      First, we transform the CRS of our Manhattan polygon into projected coordinates as
+      opposed to the original geographic coordinates (WGS84), since only projected
+      coordinates may be converted to <c>spatstat</c> class objects. As we saw in Chapter
+      2, measuring distance in metres is a bit easier, so since with points a good deal of
+      the analysis we subject them to involves measuring their distance from each other,
+      moving to a projected system makes sense. For NYC, the recommended projection is the
+      New York State Plane Long Island Zone (EPSG 2263), which provides a high degree of
+      accuracy and balances size and shape well. This projection, however, uses US feet
+      (which was deprecated in 2022), so instead we are going to use EPSG 32118, as an
+      alternative that uses metres as unit of measurement. So first, transform our object
+      using <c>st_transform()</c>:
+    </p>
+
+    <program language="r" label="project-manhattan-ch07">
+      <input>
+manhattan &lt;- st_transform(manhattan, 32118)
+      </input>
+    </program>
+
+    <p>
+      Then we use the <c>as.owin()</c> function to define the window based on our
+      <c>manhattan</c> object.
+    </p>
+
+    <program language="r" label="create-window-ch07">
+      <input>
+window &lt;- as.owin(st_geometry(manhattan))
+      </input>
+    </program>
+
+    <p>
+      We can plot this window to see if it looks similar in shape to our polygon of
+      Manhattan.
+    </p>
+
+    <program language="r" label="plot-window-ch07">
+      <input>
+plot(window) # owin similar to polygon
+      </input>
+    </program>
+
+    <figure xml:id="fig-manhattan-window">
+      <caption>Plot window based on Manhattan polygon</caption>
+      <image source="figure-ch07/manhattan-window.png">
+        <description>A black outline of the landmasses of Manhattan, with the title
+        'window' above.</description>
+      </image>
+    </figure>
+
+    <p>
+      We can see this worked and created an <c>owin</c> object.
+    </p>
+
+    <program language="r" label="class-window-ch07">
+      <input>
+class(window)
+window
+      </input>
+    </program>
+    <console>
+      <output>## [1] "owin"
+## window: polygonal boundary
+## enclosing rectangle: [295965, 307869] x [57329, 79111] 
+## units</output>
+    </console>
+
+    <p>
+      You can see it prints the units of measurement. But it does not identify them:
+    </p>
+
+    <program language="r" label="unitname-ch07">
+      <input>
+unitname(window)
+      </input>
+    </program>
+    <console>
+      <output>## unit / units</output>
+    </console>
+
+    <p>
+      As noted above, EPSG:32118 uses metres. So we can pass this information to our
+      <c>owin</c> object:
+    </p>
+
+    <program language="r" label="set-unitname-ch07">
+      <input>
+unitname(window) &lt;- "Meter"
+      </input>
+    </program>
+
+    <p>
+      Now that we have created the window as an <c>owin</c> object, let's get the points.
+      In the first place, we need to reproject to the same projected coordinate systems we
+      have for our boundary data using the familiar <c>st_transform()</c> function from
+      <c>sf</c>. Then we will extract the coordinates from our <c>sf</c> point data into a
+      matrix using <c>unlist()</c> from base R, so that the functions from <c>statspat</c>
+      can read the coordinates. If you remember <c>sf</c> objects have a column called
+      <c>geometry</c> that stores these coordinates as a list. By unlisting we are
+      flattening this list, taking the elements out of the list.
+    </p>
+
+    <program language="r" label="project-points-ch07">
+      <input>
+# first transform to projected CRS too to match our window
+nyc_burg &lt;- st_transform(nyc_burg, 32118)
+
+# create matrix of coordinates
+sf_nyc_burg_coords &lt;- matrix(unlist(nyc_burg$geometry), ncol = 2, byrow = T)
+      </input>
+    </program>
+
+    <p>
+      Then we use the <c>ppp()</c> function from the <c>spatstat</c> package to create the
+      object using the information from our matrix and the window that we created. The
+      <c>check</c> argument is a logical that specifies whether we want to check that all
+      points fall within the window of observation. It is recommended to set it to
+      <c>TRUE</c>, unless you are absolutely sure that this is unnecessary.
+    </p>
+
+    <program language="r" label="create-ppp-ch07">
+      <input>
+bur_ppp &lt;- ppp(x = sf_nyc_burg_coords[,1], y = sf_nyc_burg_coords[,2],
+                   window = window, check = T)
+      </input>
+    </program>
+    <console>
+      <output>## Warning: data contain duplicated points</output>
+    </console>
+
+    <p>
+      Notice the warning message about duplicated points? In spatial point pattern analysis
+      an issue of significance is the presence of duplicates. The statistical methodology
+      used for spatial point pattern processes is based largely on the assumption that
+      processes are <em>simple</em>, that is, that the points cannot be coincident. That
+      assumption may be unreasonable in many contexts (for example, the literature on repeat
+      victimisation indeed suggests that we should expect the same addresses to be at a
+      higher risk of being hit again). Even so, the point (no pun intended) is that
+      <em>"when the data has coincidence points, some statistical procedures will be
+      severely affected. So it is always strongly advisable to check for duplicate points
+      and to decide on a strategy for dealing with them if they are present"</em>
+      <xref ref="Baddeley_2016"/>.
+    </p>
+
+    <p>
+      So how to perform this check? When creating the object above, we have already been
+      warned this is an issue. But more generally we can check the duplication in a
+      <c>ppp</c> object with the following syntax: it will return a logical indicating
+      whether we have any duplication:
+    </p>
+
+    <program language="r" label="check-duplicates-ch07">
+      <input>
+any(duplicated.ppp(bur_ppp))
+      </input>
+    </program>
+    <console>
+      <output>## [1] TRUE</output>
+    </console>
+
+    <p>
+      To count the number of coincidence points, we use the <c>multiplicity()</c> function
+      from the <c>spatstat</c> package. This will return a vector of integers, with one
+      entry for each observation in our dataset, giving the number of points that are
+      identical to the point in question (including itself).
+    </p>
+
+    <program language="r" label="multiplicity-ch07">
+      <input>
+multiplicity(bur_ppp)
+      </input>
+    </program>
+
+    <p>
+      If you suspect many duplicates, it may be better to start asking how many there are.
+      For this you can use:
+    </p>
+
+    <program language="r" label="sum-multiplicity-ch07">
+      <input>
+sum(multiplicity(bur_ppp) > 1)
+      </input>
+    </program>
+    <console>
+      <output>## [1] 915</output>
+    </console>
+
+    <p>
+      That's quite something! 915 points out of 1727 burglaries share the same coordinates.
+      And we can plot this vector if we want to see the distribution of duplicates:
+    </p>
+
+    <program language="r" label="hist-multiplicity-ch07">
+      <input>
+hist(multiplicity(bur_ppp))
+      </input>
+    </program>
+
+    <figure xml:id="fig-multiplicity-histogram">
+      <caption>Histogram of incidents in overlapping coordinates (multiplicity)</caption>
+      <image source="figure-ch07/hexagon-intensity.png">
+        <description>A bar chart titled 'Histogram of multiplicity, bur_ppp', with bars
+        shaded grey. The vertical axis is labeled 'Frequency', and ranges from zero to eight
+        hundred, with notches every two hundred values. The horizontal axis is labeled
+        'multiplicity, bur_ppp', ranging from zero to ten, with markings at two, four, six,
+        and eight. The first bar is a little over eight hundred tall, with each subsequent
+        bar being close to half of the previous one.</description>
+      </image>
+    </figure>
+    <p>
+      In the case of crime, as we have hinted some, of this may be linked to the nature of
+      crime itself. Hint: repeat victimisation. It is estimated that between 7 and 33% of
+      all burglaries in several western and developed countries are repeat offenses
+      <xref ref="Chainey_2016"/>. Our 52% is quite high by those standards. In this
+      particular situation, it likely is the result of geomasking (the introduction of small
+      inaccuracies into their geocoded location) due to privacy reasons. Most police data
+      stored in open data portals do not include the exact address of crime events. In the
+      case of US police data, as noted by the documentation of CODE, it relies on addresses
+      geocoded to the nearest hundred block. So say "370 Gorse Avenue" could be rounded
+      down and geocoded to "300 Gorse Avenue". The same would happen to "307 Gorse Avenue",
+      in the public release version of the data it would feature as "300 Gorse Avenue". In
+      the UK there exist a pre-determined list of points so that each crime event gets
+      "snapped" to its nearest one. So, the coordinates provided in the open data are not
+      the exact locations of crimes. This process is likely inflating the amount of
+      duplication we may observe, because each snap point or hundred block address might
+      have many crimes near it, resulting in those crimes being geo-coded to the same exact
+      location. So keep it in mind when analysing and working with this kind of data set
+      that it may not be the same as working with the real locations. (If you are interested
+      in the effects of this, read the paper by <xref ref="Tompson_2015"/>).
+    </p>
+
+    <p>
+      What to do about duplicates in spatial point pattern analysis is not always clear. You
+      could simply delete the duplicates, but of course that may ignore issues such as
+      repeat victimisation. You could also use <term>jittering</term>, which will add a
+      small perturbation to the duplicate points so that they do not occupy the exact same
+      space. This, again, may ignore things like repeat victimisation. Another alternative
+      is to make each point "unique" and then attach the multiplicities of the points to the
+      patterns as <em>marks</em>, as attributes of the points. Then you would need analytic
+      techniques that take into account these marks.
+    </p>
+
+    <p>
+      If you were to be doing this for real, you would want access to the original source
+      data, not this public version of the data, as well as access to the data producers to
+      check that duplicates are not artificial, and then go for the latter solution suggested
+      above (using multiplicities as marks once we adjust for any artificial inflation). We
+      don't have access to the source data, so for the sake of simplicity and convenience at
+      this point and so that we can illustrate how <c>spatstat</c> works, we will first add
+      some jittering to the data. For this we use <c>rjitter()</c>.
+    </p>
+
+    <p>
+      The first argument for the function is the object, <c>retry</c> asks whether we want
+      the algorithm to have another go if the jittering places a point outside the window
+      (we want this so that we don't have to lose points), and the <c>drop</c> argument is
+      used to ensure we get a <c>ppp</c> object as a result of running this function (which
+      we do). The argument <c>nsim</c> sets the number of simulated realisations to be
+      generated. If we just want one <c>ppp</c> object, we need to set this to 1. You can
+      also specify the scale of the perturbation; the points will be randomly relocated in a
+      uniform way in a circle within this radius. The help file notes that there is a
+      "sensible default", but it does not say much more about it, so you may want to set the
+      argument yourself if you want to have more control over the results. Here we are
+      specifying 1.5 metres to minimise the effects of this random displacement.
+    </p>
+
+    <program language="r" label="jitter-ch07">
+      <input>
+set.seed(200)
+jitter_bur &lt;- rjitter(bur_ppp, retry=TRUE, nsim=1, radius = 1.5, drop=TRUE)
+      </input>
+    </program>
+
+    <p>
+      And you can check duplicates with the resulting object:
+    </p>
+
+    <program language="r" label="check-jitter-duplicates-ch07">
+      <input>
+sum(multiplicity(jitter_bur) > 1)
+      </input>
+    </program>
+    <console>
+      <output>## [1] 0</output>
+    </console>
+
+    <p>
+      Later we will demonstrate how to use the number of incidents in the same address as a
+      <em>mark</em> or <em>weight</em>, so let's create a new <c>ppp</c> object that
+      includes this mark. We need to proceed in steps. First, we create a new <c>ppp</c>,
+      just a duplicate of the one we have been using as a placeholder.
+    </p>
+
+    <program language="r" label="placeholder-ppp-ch07">
+      <input>
+bur_ppp_m &lt;- bur_ppp
+      </input>
+    </program>
+
+    <p>
+      Now we can assign to this <c>ppp</c> object the numerical vector created by the
+      <c>multiplicity</c> function as the <em>mark</em> using the <c>marks</c> function.
+    </p>
+
+    <program language="r" label="assign-marks-ch07">
+      <input>
+marks(bur_ppp_m) &lt;- multiplicity(bur_ppp)
+      </input>
+    </program>
+
+    <p>
+      If you examine your environment, you will be able to see the new object and that it
+      has a 6th element, which is the mark we just assigned.
+    </p>
+
+  </section>
+
+  <section xml:id="sec-ch07-intensity">
+    <title>Homogeneous or spatially varying intensity?</title>
+
+    <p>
+      Central to our exploratory point pattern analysis is the notion of
+      <term>intensity</term>, that is the average number of points per area. A key question
+      that concerns us is whether this intensity is homogeneous or uniform, or rather is
+      spatially varying due, for example, to spatially varying risk factors. With
+      <c>spatstats</c> you can produce a quick estimate of intensity for the whole study
+      area if you assume a homogeneous distribution with <c>intensity.ppp()</c>.
+    </p>
+
+    <program language="r" label="intensity-ch07">
+      <input>
+intensity.ppp(jitter_bur)
+      </input>
+    </program>
+    <console>
+      <output>## [1] 2.92e-05</output>
+    </console>
+
+    <p>
+      Metres are a small unit. So the value we get is very close to zero and hard to
+      interpret. We can use the <c>rescale()</c> function (in <c>spatstat</c> package) to
+      obtain the intensity per kilometres instead. The second argument is the number we
+      multiply our original units by:
+    </p>
+
+    <program language="r" label="rescale-intensity-ch07">
+      <input>
+intensity.ppp(rescale(jitter_bur, 1000, "km"))
+      </input>
+    </program>
+    <console>
+      <output>## [1] 29.2</output>
+    </console>
+
+    <p>
+      We see this result that overall the intensity across our study space is about 29
+      burglaries per square kilometre. Does this sound right? Well, Manhattan has roughly
+      59.1 km<m>^2</m>. If we divide 1727 incidents by this area, we get around 29
+      burglaries per km<m>^2</m>. This estimate, let's remember, assumes that the intensity
+      is homogeneous across the study window.
+    </p>
+
+    <p>
+      If we suspect the point pattern is spatially varying, we can start exploring this.
+      One approach is to use <term>quadrat counting</term>. A <term>quadrat</term> refers to
+      a small area &#x2014; a term taken from ecology where quadrats are used to sample
+      local distribution of plants or animals. One could divide the window of observation
+      into quadrats and count the number of points into each of these quadrats. If the
+      quadrats have an equal area and the process is spatially homogeneous, then one would
+      expect roughly the same number of incidents in each quadrat.
+    </p>
+
+    <p>
+      For producing this counting, we use the <c>quadratcount()</c> function (in
+      <c>spatstat</c>). The <c>nx</c> and <c>ny</c> argument in this function control how
+      many breaks you want alongside the X and Y coordinates to create the quadrats. So to
+      create 6 quadrats from top to bottom of Manhattan, we will set them to 1 and 6,
+      respectively. The configuration along the X and Y and the number of quadrats is
+      something you will have to choose according to what is convenient to you. Then we just
+      use standard plotting functions from R base.
+    </p>
+
+    <program language="r" label="quadrat-count-ch07">
+      <input>
+q &lt;- quadratcount(jitter_bur, nx = 1, ny = 6)
+plot(q, main = "Quadrat Count")
+      </input>
+    </program>
+
+    <figure xml:id="fig-quadrat-count">
+      <caption>Count of burglaries in quadrats</caption>
+      <image source="figure-ch07/csr-simulation.png">
+        <description>The outline of Manhattan is divided, using five horizontal lines, into
+        sections. Starting from the tip, the spacing of the lines is even. Numbers appear
+        in each section, roughly corresponding to their area, except for the fourth from the
+        top being smaller. The title 'Quadrat Count' appears above.</description>
+      </image>
+    </figure>
+
+    <p>
+      As you can see, with its irregular shape it is difficult to divide Manhattan in
+      equally shaped and sized quadrats, and thus it is hard to assess if regions of equal
+      area contain a similar number of points. Notice, however, how the third quadrat from
+      the bottom seems to have less incidents than the ones that surround it. A good portion
+      of this quadrat is taken by Central Park, where you would not expect a burglary.
+    </p>
+
+    <p>
+      Instead, we can use other forms of tessellation, like hexagons by using the
+      <c>hextess()</c> function (in <c>spatstat</c>). This is similar to the binning we
+      introduced in Chapter 4, only using different functions. The numeric argument sets the
+      size of the hexagons, you will need to play along to find an adequate value for your
+      own applications. Rather than printing the numbers inside these hexagons (if you have
+      many, this will make it difficult to read in a plot), we can map a colour to the
+      intensity (the number of points per hexagon):
+    </p>
+
+    <program language="r" label="hexagon-intensity-ch07">
+      <input>
+hex &lt;- hextess(jitter_bur, 200)
+q_hex &lt;- quadratcount(jitter_bur, tess = hex)
+plot(intensity(q_hex, image = TRUE), main = "Intensity map")
+      </input>
+    </program>
+
+    <figure xml:id="fig-hexagon-intensity">
+      <caption>Intensity map of burglaries per hexagon</caption>
+      <image source="figure-ch07/random-quadrat-count.png">
+        <description>A shaded map of Manhattan, labeled 'Intensity map'. A legend to the
+        right matches a gradient from dark blue to yellow with numbers, from zero to small
+        fractions represented in scientific notation. Most of Manhattan is blue, with red
+        patches present all over, excluding Central Park. A few spots in the south and north
+        reach orange and yellow intensities.</description>
+      </image>
+    </figure>
+
+    <p>
+      We can see more clearly now that areas of Manhattan, like Central Park, have
+      understandably a very low intensity of burglaries, whereas others, like the Lower East
+      Side and north of Washington Heights, have a higher intensity. So this map suggests to
+      us that the process may not be homogeneous &#x2014; hardly surprising when it comes to
+      crime.
+    </p>
+
+    <p>
+      A key concept in spatial point pattern analysis is the idea of <term>complete spatial
+      randomness</term> (CSR). When we look at a point pattern process, the first step in
+      the process is to ask whether it has been generated in a random manner. Under CSR,
+      points are (1) independent of each other (<em>independence</em>) and (2) have the
+      same propensity to be found at any location (<em>homogeneity</em>).
+    </p>
+
+    <p>
+      We can generate data that conform to complete spatial randomness using the
+      <c>rpoispp()</c> function (in <c>spatstat</c>). The <c>r</c> at the beginning is used
+      to denote we are simulating data (you will see this is common in R), and we are using
+      a Poisson point process, a good probability distribution for these purposes. Let's
+      generate 300 points in a random manner and save this in the object
+      <c>poisson_ppp</c>:
+    </p>
+
+    <program language="r" label="generate-csr-ch07">
+      <input>
+set.seed(1) # Use this seed to ensure you get the same results as us
+poisson_ppp &lt;- rpoispp(300)
+      </input>
+    </program>
+
+    <p>
+      We can plot this, to see how it looks:
+    </p>
+
+    <program language="r" label="plot-csr-ch07">
+      <input>
+plot(poisson_ppp, main = "Complete Spatial Randomness")
+      </input>
+    </program>
+
+   <figure xml:id="fig-csr-simulation">
+      <caption>Simulated complete spatial randomness</caption>
+        <image source="figure-ch07/kde-pixel-contour-persp.png">
+        <description>A black square, with many small black circles spread out inside of it,
+        titled 'Complete Spatial Randomness'. The circles form clusters and line-like shapes
+        here and there, with many open spaces present.</description>
+      </image>
+    </figure>
+
+    <p>
+      You will notice that the points in a homogeneous Poisson process are not 'uniformly
+      spread': there are empty gaps and clusters of points. This is very important. Random
+      may look like what you may think non-random should look. There seem to be places with
+      apparent "clustering" of points. Keep this in mind when observing maps of crime
+      distributions. Run the previous command a few times. You will see the map generated is
+      different each time.
+    </p>
+
+    <p>
+      In classical literature, the <em>homogeneous Poisson process</em> (CSR) is usually
+      taken as the appropriate 'null' model for a point pattern. Our basic task in analysing
+      a point pattern is to find evidence against CSR. We can run a Chi Square test to check
+      this in our data. So, for example, like we did above with Manhattan, we can split our
+      area into quadrats.
+    </p>
+
+    <program language="r" label="random-quadrat-ch07">
+      <input>
+q2 &lt;- quadratcount(poisson_ppp, nx = 6, ny = 6)
+plot(q2, main = "Quadrat Count")
+      </input>
+    </program>
+
+    <figure xml:id="fig-random-quadrat-count">
+      <caption>Count of our random points in quadrats</caption>
+        <image source="figure-ch07/kde-bandwidth-comparison.png">
+        <description>A six by six grid with numbers in each cell, titled 'Quadrat Count'.
+        The numbers range from two to fifteen, with no particular pattern.</description>
+      </image>
+    </figure>
+
+    <p>
+      These numbers are looking more even than they did with our burglaries, but to really
+      put this to the test, we run the Chi Square test using the <c>quadrat.test()</c>
+      function.
+    </p>
+
+    <program language="r" label="quadrat-test-random-ch07">
+      <input>
+quadrat.test(poisson_ppp, nx = 6, ny = 6)
+      </input>
+    </program>
+    <console>
+      <output>## 
+##  Chi-squared test of CSR using quadrat counts
+## 
+## data:  poisson_ppp
+## X2 = 44, df = 35, p-value = 0.3
+## alternative hypothesis: two.sided
+## 
+## Quadrats: 6 by 6 grid of tiles</output>
+    </console>
+
+    <p>
+      We can see this p-value is greater than the conventional alpha level of 0.05, and
+      therefore we cannot reject the null hypothesis that our point patterns come from
+      complete spatial randomness &#x2014; which is great news, as they indeed do!
+    </p>
+
+    <p>
+      How about our burglaries? Let's run the <c>quadrat.test()</c> function to tell us
+      whether burglaries in Manhattan follow spatial randomness.
+    </p>
+
+    <program language="r" label="quadrat-test-burglaries-ch07">
+      <input>
+quadrat.test(jitter_bur, nx = 1, ny = 6)
+      </input>
+    </program>
+    <console>
+      <output>## 
+##  Chi-squared test of CSR using quadrat counts
+## 
+## data:  jitter_bur
+## X2 = 238, df = 5, p-value &lt;2e-16
+## alternative hypothesis: two.sided
+## 
+## Quadrats: 6 tiles (irregular windows)</output>
+    </console>
+
+    <p>
+      Observing the results, we see that the p value is well below conventional standards
+      for rejection of the null hypothesis. Observing our data of burglary in Manhattan
+      would be extremely rare if the null hypothesis of a homogeneous distribution was true.
+      We can then conclude that the burglary data is not randomly distributed in the
+      observed space. But no cop nor criminologist would really question this. They would
+      rarely be surprised by your findings! We do know, through research, that crime is not
+      randomly distributed in space.
+    </p>
+
+    <p>
+      Beware as well that this test would come out as significant <em>if the point pattern
+      violates the property of independence between the points</em>. It is important to keep
+      in mind that the null may be rejected either because the process is not homogeneous
+      <em>or</em> because the points are not independent, but the test doesn't tell us the
+      reason for the rejection. Equally, the power depends on the size of the quadrats (and
+      they are not too large or too small). And the areas are not of equal size here in any
+      case. So the test in many applications will be of limited use.
+    </p>
+
+  </section>
+
+  <section xml:id="sec-ch07-kde">
+    <title>Mapping intensity estimates with <c>spatstat</c></title>
+
+    <subsection xml:id="subsec-ch07-kde-basics">
+      <title>Basics of kernel density estimation</title>
+
+      <p>
+        One of the most common methods to visualise hot spots of crime, when we are working
+        with point pattern data, is to use kernel density estimation. <term>Kernel density
+        estimation</term> involves applying a function (known as a "kernel") to each data
+        point, which averages the location of that point with respect to the location of
+        other data points. The surface that results from this model allows us to produce
+        <term>isarithmic maps</term>. It is essentially a more sophisticated way of
+        visualising intensity (points per area) than the tessellations we have covered so
+        far.
+      </p>
+
+      <p>
+        Kernel density estimation maps are very popular among crime analysts. According to
+        <xref ref="Chainey_2013a"/>, 9 out of 10 intelligence professionals prefer them to
+        other techniques for hot spot analysis. As compared to visualisations of crime that
+        rely on point maps or thematic maps of geographic administrative units (such as
+        LSOAs), isarithmic maps are considered best for location, size, shape and
+        orientation of the hot spot. <xref ref="Chainey_2008"/> have also suggested that
+        this method produces some of the best prediction accuracy. The areas identified as
+        hot spots by KDE (using historical data) tend to be the ones that better identify
+        the areas that will have high levels of crime in the future. Yet, producing these
+        maps (as with any map, really) requires you to take a number of decisions that will
+        significantly affect the resulting product and the conveyed message. Like any other
+        data visualisation technique, they can be powerful, but they have to be handled with
+        great care.
+      </p>
+
+      <p>
+        Essentially this method uses a statistical technique (kernel density estimation) to
+        generate a smooth continuous surface aiming to represent the intensity or volume of
+        crimes across the target area. The technique, in one of its implementations (quartic
+        kernel), is described in this way by <xref ref="Chainey_2013b"/>:
+      </p>
+
+      <blockquote>
+        <p>
+          <em>a fine grid is generated over the point distribution;
+          a moving three-dimensional function of a specified radius visits each cell and
+          calculates weights for each point within the kernel's radius. Points closer to the
+          centre will receive a higher weight, and therefore contribute more to the cell's
+          total density value;
+          and final grid cell values are calculated by summing the values of all kernel
+          estimates for each location</em>
+        </p>
+      </blockquote>
+
+      <p>
+        The values that we attribute to the cells in crime mapping will typically refer to
+        the number of crimes within the area's unit of measurement (intensity). Let's
+        produce one of these density maps, just with the default arguments of the
+        <c>density.ppp()</c> function:
+      </p>
+
+      <program language="r" label="density-default-ch07">
+        <input>
+ds &lt;- density.ppp(jitter_bur)
+class(ds)
+        </input>
+      </program>
+      <console>
+        <output>## [1] "im"</output>
+      </console>
+
+      <p>
+        The resulting object is of class <c>im</c>, a pixel image, a grid of spatial
+        locations with values attached to them. You can visualise this image as a map (using
+        <c>plot()</c>), contour plots (using <c>contour()</c>), or as a perspective plot
+        (using <c>persp()</c>).
+      </p>
+
+      <program language="r" label="density-visualise-ch07">
+        <input>
+par(mfrow=c(1,3))
+plot(ds, main='Pixel image')
+contour(ds, main = 'Contour plot')
+persp(ds, main = 'Perspective plot')
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-pixel-contour-persp">
+        <caption>Visualisations of intensity of burglary in Manhattan</caption>
+        <image source="figure-ch07/kde-adaptive-bandwidth.png">
+          <description>Three plots with shapes of Manhattan, titled 'Pixel image', 'Contour
+          plot', and 'Perspective plot'. The 'Pixel image' plot uses the gradient from blue
+          to yellow that we have seen before, legend included. However the colours change
+          smoothly from two concentrations of yellow near the north and south, and darken to
+          a purple around Central Park. The second plot, titled 'Contour plot', does not
+          include the outline of Manhattan, but instead has smooth curved lines where the
+          colours transitioned in the first image. The third plot is a representation of a
+          three dimensional plot, with two axes being the latitudes and longitudes, and the
+          third one, height, being the intensity.</description>
+        </image>
+      </figure>
+
+      <p>
+        The density function is estimating a kernel density estimate. The result of
+        <c>density.ppp()</c> <em>is not a probability density</em>. It is an estimate of
+        the intensity function of the point process that generated the point pattern. The
+        units of intensity are "points per unit area". Density, in this context, is nothing
+        but the number of points per unit area. This method computes the intensity
+        continuously across the study area, and the object returns a raster image. Depending
+        what package you use to generate the estimation (e.g., <c>spatstat</c>,
+        <c>SpatialKDE</c>, etc) you can set a different metric.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch07-kde-bandwidth">
+      <title>Selecting the appropriate bandwidth for KDE</title>
+
+      <p>
+        The defaults in <c>density.ppp()</c> are not necessarily the optimal ones for your
+        application. When doing spatial density analysis, there are a number of things you
+        have to decide upon (e.g., bandwidth, kernel type, etc.).
+      </p>
+
+      <p>
+        To perform this analysis, we need to define the <term>bandwidth</term> of the
+        density estimation, which basically determines the area of influence of the
+        estimation. There is no general rule to determine the correct bandwidth; generally
+        speaking, if the bandwidth is too small the estimate is too noisy, while if
+        bandwidth is too high the estimate may miss crucial elements of the point pattern
+        due to oversmoothing. The key argument to pass to the <c>density.ppp()</c> is
+        <c>sigma=</c>, which determines the bandwidth of the kernel. Sigma is the
+        <em>standard deviation of the kernel</em>, and you can enter a numeric value or a
+        function that computes an appropriate value for it.
+      </p>
+
+      <p>
+        A great deal of research has been developed to produce algorithms that help in
+        selecting the bandwidth (see <xref ref="Baddeley_2016"/> and
+        <xref ref="Davies_2017"/> for details). In the <c>spatstat</c> package the functions
+        <c>bw.diggle()</c>, <c>bw.ppl()</c>, and <c>bw.scott()</c> can be used to estimate
+        the bandwidth according to difference methods (mean square error cross-validation,
+        likelihood cross-validation, and Scott's rule of thumb for bandwidth section in
+        multi-dimensional smoothing, respectively). The help files recommend the use of the
+        first two. These functions run algorithms that aim to select an appropriate
+        bandwidth.
+      </p>
+
+      <program language="r" label="bandwidth-algorithms-ch07">
+        <input>
+set.seed(200) # We set this seed to ensure you get this same results when running
+              # these algorithms
+bw.diggle(jitter_bur)
+bw.ppl(jitter_bur)
+bw.scott(jitter_bur)
+        </input>
+      </program>
+      <console>
+        <output>## sigma 
+## 2.912 
+## sigma 
+## 73.06 
+## sigma.x sigma.y 
+##   608.4  1447.6</output>
+      </console>
+
+      <p>
+        Scott's rule generally provides larger bandwidth than the other methods. Don't be
+        surprised if your results do not match exactly the ones we provide if you do not use
+        the same seed, the computation means that they will vary every time we run these
+        functions. Keep in mind these values will be expressed in the unit of the projected
+        coordinate system you use (in this case metres). We can visualise how they influence
+        the appearance of 'hot spots':
+      </p>
+
+      <program language="r" label="bandwidth-comparison-ch07">
+        <input>
+set.seed(200)
+par(mfrow=c(1,3))
+plot(density.ppp(jitter_bur, sigma = bw.diggle(jitter_bur),edge=T),
+     main = "Diggle")
+
+plot(density.ppp(jitter_bur, sigma = bw.ppl(jitter_bur),edge=T),
+     main="PPL")
+
+plot(density.ppp(jitter_bur, sigma = bw.scott(jitter_bur) ,edge=T),
+     main="Scott")
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-bandwidth-comparison">
+        <caption>Kernel density maps with different bandwidth estimation algorithms</caption>
+        <image source="figure-ch07/kde-kernel-shapes.png">
+          <description>Three different shaded maps of Manhattan, titled 'Diggle', 'PPL',
+          and 'Scott'. Each has a legend with a gradient from blue to yellow, though
+          slightly different values. The first, 'Diggle', shows a mostly blue Manhattan,
+          with speckles of red mostly in the south and north. Very few points stand out as
+          yellow. The second, 'PPL', has less speckling, and instead more patches of red,
+          some of which contain a little yellow. The third, 'Scott', is once again a
+          smoothly varying shading, with concentrations of yellow in the north and south
+          transitioning into a purple near Central Park.</description>
+        </image>
+      </figure>
+
+      <p>
+        When looking for clusters, <xref ref="Baddeley_2016"/> suggest the use of the
+        <c>bw.ppl()</c> algorithm because in their experience it tends to produce the more
+        appropriate values when the pattern consists predominantly of tight clusters. But
+        they also insist that if your purpose is to detect a single tight cluster in the
+        midst of random noise, then the <c>bw.diggle()</c> method seems to work best.
+      </p>
+
+      <p>
+        All these methods use a fixed bandwidth: they use the same bandwidth for all
+        locations. As noted by <xref ref="Baddeley_2016"/> a "fixed smoothing bandwidth is
+        unsatisfactory if the true intensity varies greatly across the spatial domain,
+        because it is likely to cause oversmoothing in the high-intensity areas and
+        undersmoothing in the low-intensity areas" (p. 174). When using these methods in
+        areas of high point density, the resulting bandwidth will be small, while in areas
+        of low point density the resulting bandwidth will be large. This allows us to reduce
+        smoothing in parts of the window where there are many points so that we capture more
+        detail in the density estimates there, whilst at the same time increasing the
+        smoothing in areas where there are less points.
+      </p>
+
+      <p>
+        With <c>spatstat</c> we can use an adaptive bandwidth method, where (1) a fraction
+        of the points are selected at random and used to construct a tessellation; (2) a
+        quadrat counting estimate of the intensity is produced; and (3) the process is
+        repeated a set number of times and an average is computed. The
+        <c>adaptive.density()</c> function (in <c>spatstat</c>) takes as arguments the
+        fraction of points to be sampled (<c>f</c>) and the number of samples to be taken
+        (<c>nrep</c>). The logical argument <c>verbose</c> when set to <c>FALSE</c> (not
+        the default) means we won't see a message in the console informing of the steps in
+        the simulation.
+      </p>
+
+      <program language="r" label="adaptive-density-ch07">
+        <input>
+plot(adaptive.density(jitter_bur, f=0.1, nrep=30, verbose=FALSE),
+     main = "adaptive bandwidth method")
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-adaptive-bandwidth">
+        <caption>Adaptive bandwidth method for estimating bandwidth for KDE map</caption>
+        <image source="figure-ch07/kde-weighted.png">
+          <description>Another shading of Manhattan with a legend containing a gradient from
+          blue to yellow, titled 'adaptive bandwitdth method'. The island is mostly blue,
+          with smooth patches of purple and red in the south and north. Yellow appears in
+          two of the patches.</description>
+        </image>
+      </figure>
+
+      <p>
+        Which bandwidth to use? <xref ref="Chainey_2021"/> is critical of the various
+        algorithms we have introduced. He suggests that "they tend to produce large
+        bandwidths, and are considered unsuitable for exploring local spatial patterns of
+        the density distribution of crime." As we have seen with our example this is not
+        necessarily the case, if anything both mean square error cross-validation and
+        likelihood cross-validation produce small bandwidths in this example. When it comes
+        to crime, <xref ref="Neville_2013"/> suggests that the "best choice would be to
+        produce an interpolation that fits the experience of the department and officers who
+        travel an area. Again, experimentation and discussions with beat officers will be
+        necessary to establish which bandwidth choice should be used in future
+        interpolations" (p. 10.22). This is generally accepted by other authors in the
+        field. We see no damage in using these algorithms as a starting point and then, as
+        suggested by most authors (see as well <xref ref="Chainey_2021"/>), to engage in a
+        discussion with the direct users (considering what the map will be used for) to set
+        in a particular bandwidth that is not too spiky, nor oversmoothed.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch07-kde-kernel">
+      <title>Selecting the smoothing kernel</title>
+
+      <p>
+        Apart from selecting the bandwidth, we also need to specify the particular kernel we
+        will use. In density estimation there are different types of kernel. This relates to
+        the type of kernel drawn around each point in the process of counting points around
+        each point. The use of these functions will result in slightly different estimations.
+        They relate to the way we weigh points within the radius:
+      </p>
+
+      <blockquote>
+        <p>
+          <em>The normal distribution weighs all points in the study area, though near
+          points are weighted more highly than distant points. The other four techniques use
+          a circumscribed circle around the grid cell. The uniform distribution weighs all
+          points within the circle equally. The quartic function weighs near points more
+          than far points, but the fall off is gradual. The triangular function weighs near
+          points more than far points within the circle, but the fall off is more rapid.
+          Finally, the negative exponential weighs near points much more highly than far
+          points within the circle and the decay is very rapid.</em>
+          <xref ref="Levine_2013"/> Chapter 10, p. 10.
+        </p>
+      </blockquote>
+
+      <p>
+        Which one to use? <xref ref="Levine_2013"/> produces the following guidance:
+        "<em>The use of any of one of these depends on how much the user wants to weigh near
+        points relative to far points. Using a kernel function which has a big difference in
+        the weights of near versus far points (e.g., the negative exponential or the
+        triangular) tends to produce finer variations within the surface than functions
+        which weight more evenly (e.g., the normal distribution, the quartic, or the
+        uniform); these latter ones tend to smooth the distribution more</em>." However,
+        <xref ref="Silverman_1986"/> has argued that it does not make that much difference
+        as long as the kernel is symmetrical. <xref ref="Chainey_2013b"/> suggests that in
+        his experience most crime mappers prefer the quartic function, since it applies
+        greater weight to crimes closer to the centre of the grid. The authors of the
+        CrimeStat workbook <xref ref="Smith_2008"/>, on the other hand, suggest that the
+        choice of the kernel should be based in our theoretical understanding of the data
+        generating mechanisms. By this they mean that the processes behind spatial
+        dependence may be different according to various crime patterns and that this is
+        something that we may want to take into account when selecting a particular function.
+        They provide a table with some examples that may help you to understand what they
+        mean. For example, for residential burglaries they recommend 1 mile with normally
+        dispersed quartic or uniform interpolation, while for domestic violence, 0.1 mile
+        and the tightly focused, negative exponential method <xref ref="Smith_2008"/>.
+      </p>
+
+      <p>
+        The default kernel in <c>density.ppp()</c> is <c>gaussian</c>. But there are other
+        options. We can use the <c>epanechnikov</c>, <c>quartic</c> or <c>disc</c>. There
+        are also further options for customisation. We can compare these kernels, whilst
+        using the <c>ppl</c> algorithm for sigma (remember, we set seed at 200 for this
+        particular value):
+      </p>
+
+      <program language="r" label="kde-kernel-comparison-ch07">
+        <input>
+par(mfrow=c(2,2),mar = c(0.1, 0.1, 0.6, 0.1))
+# Gaussian kernel function (the default)
+plot(density.ppp(jitter_bur, sigma = bw.ppl(jitter_bur), edge=TRUE), main="Gaussian")
+
+# Epanechnikov (parabolic) kernel function
+plot(density.ppp(jitter_bur, kernel = "epanechnikov", sigma = bw.ppl(jitter_bur),
+                 edge=TRUE), main="epanechnikov")
+
+# Quartic kernel function
+plot(density.ppp(jitter_bur, kernel = "quartic", sigma = bw.ppl(jitter_bur), edge=TRUE),
+     main="Quartic")
+
+plot(density.ppp(jitter_bur, kernel = "disc", sigma = bw.ppl(jitter_bur), edge=TRUE),
+     main="Disc")
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-kernel-shapes">
+        <caption>KDE maps created with different kernel shapes</caption>
+        <image source="figure-ch07/kde-raster.png">
+          <description>Four tiny shaded maps of Manhattan, with barely any discernable
+          difference. They are titled 'Gaussian', 'epanechnikov', 'Quartic', and
+          'Disc'.</description>
+        </image>
+      </figure>
+
+      <p>
+        You can see how the choice of the kernel has less of an impact than the choice of
+        the bandwidth. In practical terms, choice of the specific kernel is of secondary
+        importance to the bandwidth.
+      </p>
+
+      <p>
+        Equally, you may have noticed an argument in <c>density.ppp()</c> we have not
+        discussed: <c>edge = TRUE</c>. What is this? When estimating the density we are not
+        observing points outside our window. In the case of an island like Manhattan,
+        perhaps this is not an issue. But often when computing estimates for a given
+        jurisdiction, we need to think about what is happening in the jurisdiction next door
+        to us. Our algorithm does not see the crimes in jurisdictions neighbouring ours, and
+        so the estimations around the edges of our boundaries receive fewer contributions in
+        the computation. By setting <c>edge = TRUE</c> we are effectively applying a
+        correction that tries to compensate for this negative bias.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch07-kde-weighted">
+      <title>Weighted kernel density estimates</title>
+
+      <p>
+        In the past examples we used the un-weighted version of the estimation methods, but
+        if the points are weighted (like for example by multiplicity) we can use weighted
+        versions of these methods. We simply need to pass an argument that specifies the
+        weights.
+      </p>
+
+      <program language="r" label="kde-weighted-ch07">
+        <input>
+set.seed(200)
+plot(density.ppp(bur_ppp_m, sigma = bw.ppl(bur_ppp_m), edge = T,
+                 kernel = "quartic", weights = marks(bur_ppp_m)),
+     main = "Weighted Points")
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-weighted">
+        <caption>Weighting KDE estimates</caption>
+        <image source="figure-ch07/kde-weighted-estimates.png">
+          <description>This shaded map of Manhattan is titled 'Weighted Points'. Rather
+          than blotches or speckles, the blue is broken up by thicker points of red, which
+          sometimes turn into yellow at their centre in the north.</description>
+        </image>
+      </figure>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch07-kde-leaflet">
+      <title>Better KDE maps using <c>leaflet</c></title>
+
+      <p>
+        The plots produced by <c>spatstat</c> are good for initial exploration, but if you
+        want to present this to an audience, you may want to use one of the various packages
+        we have covered so far for visualising spatial data. Here we show how to use
+        <c>leaflet</c> for plotting densities. Hot spot analysis often has an exploratory
+        character, and the interactivity provided by <c>leaflet</c> is particularly helpful,
+        since it allows us to zoom in and out and check the details of the areas with high
+        intensities.
+      </p>
+
+      <p>
+        Often it is convenient to use a basemap to provide context. In order to do that, we
+        first need to turn the image object generated by the <c>spatstat</c> package into a
+        raster object, a more generic format for raster image used in R. Remember rasters
+        from the first chapter? Now we finally get to use them a bit! First, we store the
+        density estimates produced by <c>density.ppp()</c> into an object (which will be of
+        class <c>im</c>, a two-dimensional pixel image), and then using the <c>raster()</c>
+        function from the <c>raster</c> package, we generate a raster object.
+      </p>
+
+      <program language="r" label="kde-to-raster-ch07">
+        <input>
+set.seed(200)
+dmap1 &lt;- density.ppp(jitter_bur,
+                     kernel = "quartic",
+                     sigma = bw.ppl(jitter_bur),
+                     edge=T)
+# create raster object from im object
+r1 &lt;- raster(dmap1)
+        </input>
+      </program>
+
+      <program language="r" label="plot-raster-ch07">
+        <input>
+# plot the raster object
+plot(r1, main = "Raster")
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-raster">
+        <caption>Raster image of KDE output</caption>
+        <image source="figure-ch07/kde-random-poisson.png">
+          <description>A different looking shaded map of Manhattan, titled 'Raster'. The
+          landmass is shaded light grey, and large numbers appear on notches on the vertical
+          and horizontal axis. A legend to the right increases from zero as grey or
+          transparent, then orange, then yellow, and finally green for the largest values.
+          The blotchy shading on the map is familiar by now, with Central Park being
+          avoided, and most of the island shaded orange, with some green
+          appearing.</description>
+        </image>
+      </figure>
+
+      <p>
+        We can remove the areas with very low density of burglaries for better reading of
+        the map:
+      </p>
+
+      <program language="r" label="kde-remove-low-ch07">
+        <input>
+#remove very low density values
+r1[r1 &lt; 0.00010 ] &lt;- NA
+
+#multiply by 1000 to re-express intensity in terms of burglaries per km
+values(r1) &lt;- values(r1)*1000
+        </input>
+      </program>
+
+      <p>
+        Now that we have the raster, we can add it to a basemap. Two-dimensional
+        <c>RasterLayer</c> objects (from the <c>raster</c> package) can be turned into
+        images and added to <c>Leaflet</c> maps using the <c>addRasterImage()</c> function.
+        The <c>addRasterImage()</c> function works by projecting the <c>RasterLayer</c>
+        object to EPSG:3857 and encoding each cell to an RGBA colour, to produce a PNG
+        image. That image is then embedded in the map widget. This is only suitable for
+        small to medium-sized rasters.
+      </p>
+
+      <p>
+        It's important that the <c>RasterLayer</c> object is tagged with a proper coordinate
+        reference system, so that leaflet can then reproject to EPSG:3857. Many raster files
+        contain this information, but some do not. Here is how you would tag a raster layer
+        object <c>r1</c> which contains the EPSG:32118 data:
+      </p>
+
+      <program language="r" label="kde-set-crs-ch07">
+        <input>
+#make sure we have right CRS, which in this case is the New York 32118
+
+crs(r1) &lt;- "EPSG:32118"
+        </input>
+      </program>
+
+      <p>
+        The way we assign the CRS above is using the now most accepted PROJ6 format. You
+        can find how these different formats apply to each coordinate system in the online
+        archives.
+      </p>
+
+      <p>
+        Now we are ready to plot, although first we will create a more suitable colour
+        palette and, since the values in the scale are quite close to 0, will multiply by a
+        constant, to make the labels more readable. For this we use the <c>values()</c>
+        function from the <c>raster</c> package that allows us to manipulate the values in a
+        raster object:
+      </p>
+
+      <program language="r" label="kde-leaflet-map-ch07">
+        <input>
+pal &lt;- colorNumeric("Reds", values(r1),
+  na.color = "transparent") #Create colour palette
+
+#and then make map!
+nyc_map &lt;- leaflet() %&gt;%
+  addTiles() %&gt;%
+  addProviderTiles(providers$Stamen.TonerLite) %&gt;%
+  addRasterImage(r1, colors = pal, opacity = 0.7) %&gt;%
+  addLegend(pal = pal, values = values(r1),
+    title = "Burglary map")
+
+# print map
+nyc_map
+        </input>
+      </program>
+
+      <p>
+        And there you have it. Perhaps those familiar with Manhattan have some guesses as to
+        what may be going on there?
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch07-kde-problems">
+      <title>Problems with KDE</title>
+
+      <p>
+        There are at least two problems with these maps. First, they are just a convenient
+        visualisation to represent the location of crime incidents. But they are not
+        adjusting by the population at risk. If all you care about is where most crimes are
+        taking place, that may then be fine. But if you are interested in relative risk,
+        intensity adjusting by population at risk, then you are bound to be misled by these
+        methods, which usually will plot very well the distribution of the population at
+        risk. Second, the Poisson process, as we saw, creates what may appear as areas with
+        more points than others, even though it is a random process. In other words, you may
+        just be capturing random noise with these maps.
+      </p>
+
+      <p>
+        There are a number of ways to adjust for background population at risk when
+        producing density estimates. Many of these methods have been developed in spatial
+        epidemiology. In criminology, the population at risk is generally available only at
+        more aggregated (at some census geography level) than in many of those applications
+        (where typically you have points representing individuals without a disease being
+        contrasted with points representing individuals with a disease). So, although one
+        could extract the centroids of these polygons representing census tracts or districts
+        as points and mark them with a value (say, population count or number of housing
+        units), there isn't a great advantage to go to all this trouble. In fact by locating
+        all the mass of the population at risk in the centroids of the polygons, you are
+        introducing some distortion. So if you want to adjust for the population at risk, it
+        is probably better to map out rates in the ways we described in previous chapters.
+        We just need to be aware, then, that KDE surfaces in essence are simply mapping
+        counts of crime. We therefore need to interpret density maps with this very
+        significant caveat.
+      </p>
+
+      <p>
+        The other problem we had is that a Poisson process under CSR can still result in a
+        map that one could read as identifying hot spots, whereas all we have is noise.
+        Remember the <c>poisson_ppp</c> object we created earlier, which demonstrated
+        complete spatial randomness? Well, if we were that way inclined, we could easily
+        compute a KDE for this:
+      </p>
+
+      <program language="r" label="kde-random-poisson-ch07">
+        <input>
+set.seed(200)
+
+plot(density.ppp(poisson_ppp, kernel = "quartic", sigma = bw.diggle(poisson_ppp),
+                 edge=T), main = "KDE for random poisson point process")
+        </input>
+      </program>
+
+      <figure xml:id="fig-kde-random-poisson">
+        <caption>Kernel density map for quartic kernel</caption>
+        <image source="figure-ch07/kernel-density-map.png">
+          <description>A square that is shaded blue to yellow, with the title 'KDE for
+          random poisson point process'. To the right a gradient matches blue to red to
+          yellow with increasing numbers. The shading varies smoothly, with hotspots of
+          yellow distributed without pattern, fading into purples which connect to other
+          yellows, and some cool blue areas.</description>
+        </image>
+      </figure>
+
+      <p>
+        And there you go, you could come to the view looking at this density map that the
+        intensity is driven by some underlying external risk factor when in fact the process
+        is purely random. In subsequent chapters we will learn about methods that can be
+        used to ensure we don't map out hot spots that may be the product of random noise.
+      </p>
+
+    </subsection>
+
+    <subsection xml:id="subsec-ch07-kde-other-packages">
+      <title>Other packages for KDE</title>
+
+      <p>
+        In this chapter we have focused on <c>spatstat</c>, for it provides a comprehensive
+        suite of tools for working with spatial point patterns. The snippets of code and
+        examples we have used here only provide a superficial glimpse into the full
+        potential of this package. But <c>spatstat</c> is by no means the only package that
+        can be used for generating spatial density estimates. We need to mention at least two
+        alternatives: <c>SpatialKDE</c> and <c>sparr</c>.
+      </p>
+
+      <p>
+        <c>SpatialKDE</c> implements kernel density estimation for spatial data with all the
+        required settings, including the selection of bandwidth, kernel type, and cell size
+        (which was computed automatically by <c>density.ppp()</c>). It is based in an
+        algorithm used in QGIS, the best free GIS system relying primarily on a
+        point-and-click interface. Unlike <c>spatstat</c>, <c>SpatialKDE</c> can work with
+        <c>sf</c> objects. But it also finds it more convenient to have the data on a
+        projected coordinate systems, so that it can compute distances on metres rather than
+        with decimal degrees.
+      </p>
+
+      <p>
+        The package <c>sparr</c> focuses on methods to compare densities and thus estimate
+        relative risk, even at a spatio-temporal scale. It is written in such a way as to
+        allow compatibility with <c>spatstat</c>. The basic functionality allows to estimate
+        KDE maps through the <c>bivariate.density()</c> function. This function can take a
+        <c>ppp</c> object and produce a KDE map. In some ways it gives the analyst more
+        flexibility than <c>density.ppp()</c>. It allows to modulate the resolution of the
+        grid, two different methods to control for edge effects, the type of estimate
+        produced (intensity or density, that integrates to 1), etc. This package also
+        introduces various methods for estimating the bandwidth different to those existing
+        in <c>spatstat</c>. Critically, it introduces a function that allows for
+        spatio-temporal kernel density estimation: <c>spattemp.density()</c>. For more
+        details, see the help files for <c>sparr</c>, and the tutorial by
+        <xref ref="Davies_2017"/>.
+      </p>
+
+    </subsection>
+
+  </section>
+
+  <section xml:id="sec-ch07-summary">
+    <title>Summary and further reading</title>
+
+    <p>
+      For a deeper understanding of the issues discussed here, we recommend the following
+      reading. The documentation manual for CrimeStat (Chapter 10) has a detailed technical
+      discussion of density estimation that is suited for crime analysts
+      <xref ref="Levine_2013"/>. Other manuals written for crime analysts also provide
+      appropriate introductions, <xref ref="Chainey_2005"/>,
+      <xref ref="Gorr_2012"/>. Chapter 7 of <xref ref="Bivand_2013"/> also provides a good
+      introduction to spatial pattern analysis with R. For a fuller coverage of this kind of
+      analysis with R, nothing can replace <xref ref="Baddeley_2016"/>. This book, at 810
+      pages, is dedicated to <c>spatstat</c> and it provides a comprehensive discussion of
+      spatial pattern analysis well beyond what we cover in this chapter. For a discussion
+      of alternatives to KDE so that the method does not assign probabilities of occurrence
+      where this is not feasible see <xref ref="Woodworth_2014"/> (though beware this has
+      not yet being implemented into R). In Chapter 8, we will discover how much of what we
+      have learnt in this one has to be adapted when working with crime data, for this data
+      typically only appears along street networks.
+    </p>
+
+  </section>
+
+</chapter>

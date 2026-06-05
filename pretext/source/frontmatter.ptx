@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<frontmatter xmlns:xi="http://www.w3.org/2001/XInclude" xml:id="frontmatter">
+  <bibinfo>
+
+    <author>
+      <personname>Juanjo Medina</personname>
+    </author>
+    <author>
+      <personname>Reka Solymosi</personname>
+    </author>
+    <date>
+      <today />
+    </date>
+
+    <website>
+      <url href="https://maczokni.github.io/crime_mapping/">Book Website</url>
+    </website>
+
+    <copyright>
+      <year>2025</year>
+      <holder>Juanjo Medina and Reka Solymosi</holder>
+      <shortlicense>
+        This work is licensed under the Creative Commons Attribution-ShareAlike 4.0 International License.
+        To view a copy of this license, visit
+        <url href="http://creativecommons.org/licenses/by-sa/4.0/" visual="creativecommons.org/licenses/by-sa/4.0">CreativeCommons.org</url>
+      </shortlicense>
+    </copyright>
+
+  </bibinfo>
+
+  <titlepage>
+    <titlepage-items/>
+  </titlepage>
+
+  <colophon xml:id="front-colophon">
+    <colophon-items/>
+  </colophon>
+
+  <preface xml:id="preface">
+    <title>Preface: how to use this book</title>
+    <p>
+      This book aims to provide the reader with an introduction to Crime Mapping and Spatial Data Analysis,
+      using R as an engine for spatial data analysis and visualisation. Based on teaching materials developed
+      by the authors, the book is a practical guide for those interested in crime analysis and criminology.
+    </p>
+    <p>
+      We imagine this to be useful for those teaching (or enrolled in) upper-level undergraduate and graduate
+      courses in higher education, as well as analysts in professional roles embarking on further training, or
+      looking for a guide for their work, as well as criminologists interested in crime mapping.
+    </p>
+    <p>
+      To follow along with the exercises, we provide the data we use in a zip file. The best approach is to
+      download this zip file into the working directory of your R project, and unzip it there. This way, you
+      can follow our code.
+    </p>
+  </preface>
+</frontmatter>
