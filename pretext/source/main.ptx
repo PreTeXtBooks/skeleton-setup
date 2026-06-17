@@ -24,7 +24,7 @@
     <xi:include href="./meta_frontmatter.ptx" />
 
     <!-- Introduction chapter -->
-    <xi:include href="./ch_intro.ptx" />
+    <xi:include href="./ch1_intro.ptx" />
 
     <!-- Additional chapters will be added here as the book develops -->
 
